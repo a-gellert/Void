@@ -216,6 +216,7 @@ local function build_hangar(self)
 end
 
 function init(self)
+    msg.post(".", "acquire_input_focus")
     self.visible = false
     build_hangar(self)
 end

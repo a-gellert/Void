@@ -1,0 +1,26 @@
+{
+  "project_git" : {
+    "sha1" : "dd3813586a1e69260d5adb0652d859ce1be7cbd5",
+    "origin" : "https://github.com/a-gellert/Void.git",
+    "branch" : "main"
+  },
+  "bob_arguments" : {
+    "sha1" : "d295ed4edff2e49072719835713e625f409849f1",
+    "version" : "1.14.0",
+    "timestamp" : "2026-10-19 14:44:44"
+  },
+  "defold_sdk" : "d295ed4edff2e49072719835713e625f409849f1",
+  "dependencies" : [ {
+    "url" : "https://github.com/defold/extension-poki-sdk/archive/refs/heads/main.zip",
+    "commit-sha1" : "3e0c3296e6c4a27b99387d9c54d06626daa94b89",
+    "payload-sha1" : "afb7d4dba5ab581827e0a15961a335acc9f5fc6a"
+  }, {
+    "url" : "https://github.com/Insality/defold-event/archive/refs/tags/21.zip",
+    "commit-sha1" : "384813497c25ff41d34ab1efdb1163217dc9dd26",
+    "payload-sha1" : "f54165de92d64fbaa25fa1a199ecf3b33dff3176"
+  }, {
+    "url" : "https://github.com/Insality/druid/archive/refs/tags/1.3.0.zip",
+    "commit-sha1" : "9a5171377fc2f7fba68fea4f2c117ee6a25d28a4",
+    "payload-sha1" : "de76b553d914936d39d462c89573f5982976588a"
+  } ]
+}

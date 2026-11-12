@@ -157,6 +157,7 @@ local function build_hud(self)
 end
 
 function init(self)
+    msg.post(".", "acquire_input_focus")
     self.visible = true
     self.stick_active = false
     self.stick_origin = vmath.vector3(0, 0, 0)
@@ -366,8 +367,8 @@ function on_input(self, action_id, action)
         return true
     elseif action_id == TOUCH then
         poki.gameplay_start()
-        local vx = (action.screen_x / math.max(1, select(1, window.get_size()))) * 1920
-        local vy = (action.screen_y / math.max(1, select(2, window.get_size()))) * 1080
+        local vx = action.x or 960
+        local vy = action.y or 540
         if action.pressed then
             if vx < 960 and self.is_touch_mode then
                 self.stick_active = true
