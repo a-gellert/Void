@@ -1,0 +1,62 @@
+local progress = require("modules.progress")
+local pool_manager = require("modules.pool_manager")
+local match_controller = require("modules.match_controller")
+local camera_rig = require("modules.camera_rig")
+local ships_db = require("data.ships_db")
+local audio = require("modules.audio")
+local poki = require("modules.poki")
+
+local function enter_battle(self)
+    self.screen = "battle"
+    msg.post("/hangar#hangar", "set_visible", { visible = false })
+    msg.post("/hud#hud_combat", "set_visible", { visible = true })
+    match_controller.start_match()
+end
+
+local function refresh_hangar_ship(self)
+    if self.screen ~= "hangar" then return end
+    local s = progress.get()
+    local stats = ships_db.get_effective_stats(s.selected_class, progress.get_player_upgrades(s.selected_class))
+    local slot = pool_manager.get_ship_slot(1)
+    pool_manager.configure_ship_visual(slot, s.selected_class, stats.tier, s.equipped_skin, s.equipped_trail, true)
+    go.set_position(vmath.vector3(0, 0, 0), slot.id)
+    go.set_rotation(vmath.quat(), slot.id)
+end
+
+local function enter_hangar(self)
+    self.screen = "hangar"
+    match_controller.stop_match()
+    msg.post("/hud#hud_combat", "set_visible", { visible = false })
+    msg.post("/hangar#hangar", "set_visible", { visible = true })
+    refresh_hangar_ship(self)
+end
+
+function init(self)
+    math.randomseed(os.time())
+    msg.post(".", "acquire_input_focus")
+    poki.init()
+
+    local p = progress.load()
+    audio.set_muted(p.muted)
+    pool_manager.init()
+
+    -- Rule of First 15 Seconds: jump straight into combat on Interceptor
+    enter_battle(self)
+end
+
+function update(self, dt)
+    local safe_dt = math.min(dt, 0.05)
+    if self.screen == "hangar" then
+        camera_rig.update_hangar(vmath.vector3(0, 0, 0), safe_dt)
+    end
+end
+
+function on_message(self, message_id, message)
+    if message_id == hash("open_hangar") then
+        enter_hangar(self)
+    elseif message_id == hash("start_battle") then
+        enter_battle(self)
+    elseif message_id == hash("refresh_hangar_preview") then
+        refresh_hangar_ship(self)
+    end
+end

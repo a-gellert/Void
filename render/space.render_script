@@ -1,0 +1,86 @@
+local MSG_CLEAR_COLOR = hash("clear_color")
+local MSG_WINDOW_RESIZED = hash("window_resized")
+local MSG_SET_VIEW_PROJ = hash("set_view_projection")
+
+local function create_clear_buffers()
+    return {
+        [graphics.BUFFER_TYPE_COLOR0_BIT] = vmath.vector4(
+            sys.get_config_number("render.clear_color_red", 0.025),
+            sys.get_config_number("render.clear_color_green", 0.035),
+            sys.get_config_number("render.clear_color_blue", 0.065),
+            sys.get_config_number("render.clear_color_alpha", 1.0)
+        ),
+        [graphics.BUFFER_TYPE_DEPTH_BIT] = 1,
+        [graphics.BUFFER_TYPE_STENCIL_BIT] = 0,
+    }
+end
+
+function init(self)
+    self.predicates = {
+        model = render.predicate({ "model" }),
+        model_emissive = render.predicate({ "model_emissive" }),
+        gui = render.predicate({ "gui" }),
+        debug_text = render.predicate({ "debug_text" }),
+    }
+    self.clear_buffers = create_clear_buffers()
+    self.window_w = render.get_window_width()
+    self.window_h = render.get_window_height()
+    self.view = vmath.matrix4_look_at(vmath.vector3(0, 8, 22), vmath.vector3(0, 0, 0), vmath.vector3(0, 1, 0))
+    local aspect = math.max(0.1, self.window_w / math.max(1, self.window_h))
+    self.proj = vmath.matrix4_perspective(math.rad(65), aspect, 0.5, 1800)
+end
+
+function update(self)
+    local w = render.get_window_width()
+    local h = render.get_window_height()
+    if w <= 0 or h <= 0 then return end
+    self.window_w = w
+    self.window_h = h
+
+    render.set_depth_mask(true)
+    render.set_stencil_mask(0xff)
+    render.clear(self.clear_buffers)
+    render.set_viewport(0, 0, w, h)
+
+    -- 3D World Pass
+    render.set_view(self.view)
+    render.set_projection(self.proj)
+    local frustum = self.proj * self.view
+    local world_opts = { frustum = frustum, frustum_planes = render.FRUSTUM_PLANES_ALL }
+
+    render.enable_state(graphics.STATE_DEPTH_TEST)
+    render.enable_state(graphics.STATE_CULL_FACE)
+    render.disable_state(graphics.STATE_BLEND)
+    render.draw(self.predicates.model, world_opts)
+
+    -- Emissive / Translucent 3D Pass (lasers, shields, domes, beacons, trails)
+    render.set_depth_mask(false)
+    render.disable_state(graphics.STATE_CULL_FACE)
+    render.enable_state(graphics.STATE_BLEND)
+    render.set_blend_func(graphics.BLEND_FACTOR_SRC_ALPHA, graphics.BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
+    render.draw(self.predicates.model_emissive, world_opts)
+    render.disable_state(graphics.STATE_DEPTH_TEST)
+
+    -- 2D GUI Pass
+    local gui_view = vmath.matrix4()
+    local gui_proj = vmath.matrix4_orthographic(0, w, 0, h, -1, 1)
+    render.set_view(gui_view)
+    render.set_projection(gui_proj)
+    render.enable_state(graphics.STATE_STENCIL_TEST)
+    render.draw(self.predicates.gui)
+    render.draw(self.predicates.debug_text)
+    render.disable_state(graphics.STATE_STENCIL_TEST)
+    render.disable_state(graphics.STATE_BLEND)
+end
+
+function on_message(self, message_id, message)
+    if message_id == MSG_CLEAR_COLOR and message.color then
+        self.clear_buffers[graphics.BUFFER_TYPE_COLOR0_BIT] = message.color
+    elseif message_id == MSG_WINDOW_RESIZED then
+        self.window_w = message.width or render.get_window_width()
+        self.window_h = message.height or render.get_window_height()
+    elseif message_id == MSG_SET_VIEW_PROJ then
+        if message.view then self.view = message.view end
+        if message.projection then self.proj = message.projection end
+    end
+end

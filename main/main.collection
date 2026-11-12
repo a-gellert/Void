@@ -1,0 +1,26 @@
+name: "main"
+instances {
+  id: "controller"
+  prototype: "/main/controller.go"
+}
+instances {
+  id: "factories"
+  prototype: "/main/factories.go"
+}
+instances {
+  id: "star_dome"
+  prototype: "/entities/star_dome/star_dome.go"
+}
+instances {
+  id: "audio"
+  prototype: "/main/audio.go"
+}
+instances {
+  id: "hud"
+  prototype: "/main/hud.go"
+}
+instances {
+  id: "hangar"
+  prototype: "/main/hangar.go"
+}
+scale_along_z: 0

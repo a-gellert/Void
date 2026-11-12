@@ -1,0 +1,430 @@
+local druid = require("druid.druid")
+local ui = require("gui.ui_helper")
+local i18n = require("modules.i18n")
+local match_controller = require("modules.match_controller")
+local camera_rig = require("modules.camera_rig")
+local combat_manager = require("modules.combat_manager")
+local progress = require("modules.progress")
+local poki = require("modules.poki")
+
+local TOUCH = hash("touch")
+local DASH = hash("dash")
+local MOD1 = hash("mod1")
+local MOD2 = hash("mod2")
+
+local input_state = {
+    steer_x = 0,
+    steer_y = 0,
+    fire_held = false,
+    dash_pressed = false,
+    mod1_pressed = false,
+    mod2_pressed = false,
+}
+
+local function reset_input()
+    input_state.steer_x = 0
+    input_state.steer_y = 0
+    input_state.fire_held = false
+    input_state.dash_pressed = false
+    input_state.mod1_pressed = false
+    input_state.mod2_pressed = false
+end
+
+local function build_hud(self)
+    if self.root then gui.delete_node(self.root) end
+    if self.druid then self.druid:final() end
+    self.druid = druid.new(self)
+
+    self.root = ui.box(nil, 0, 0, 0, 0, vmath.vector4(0, 0, 0, 0))
+    gui.set_visible(self.root, self.visible)
+
+    -- Top Scoreboard
+    self.top_bar = ui.box(self.root, 960, 1026, 660, 72, ui.C_BG, "panel_rounded")
+    self.txt_mode = ui.text(self.top_bar, 0, 20, "", 0.42, ui.C_AQUA)
+    self.txt_score_t1 = ui.text(self.top_bar, -180, -10, "0", 0.78, ui.C_AQUA)
+    self.txt_timer = ui.text(self.top_bar, 0, -10, "01:30", 0.72, ui.C_WHITE)
+    self.txt_score_t2 = ui.text(self.top_bar, 180, -10, "0", 0.78, ui.C_CORAL)
+
+    -- Boss HP Bar (visible only in Boss Raid)
+    self.boss_bar_bg = ui.box(self.root, 960, 962, 540, 24, ui.C_BG, "panel_rounded")
+    self.boss_bar_fill = ui.box(self.boss_bar_bg, -264, 0, 528, 14, ui.C_CORAL, "white")
+    gui.set_pivot(self.boss_bar_fill, gui.PIVOT_W)
+    self.txt_boss_phase = ui.text(self.boss_bar_bg, 0, -24, "", 0.42, ui.C_AMBER)
+
+    -- Hint Banner (First 15s / Boss instructions)
+    self.hint_bg = ui.box(self.root, 960, 880, 920, 48, ui.C_BG, "panel_rounded")
+    self.txt_hint = ui.text(self.hint_bg, 0, 0, "", 0.48, ui.C_GOLD)
+
+    -- Center Soft Lock-On Reticle
+    self.reticle = ui.box(self.root, 960, 540, 220, 220, vmath.vector4(0.15, 0.78, 0.85, 0.55), "reticle")
+    self.lock_ring = ui.box(self.root, 960, 540, 86, 86, ui.C_CORAL, "lock_ring")
+    self.lock_name = ui.text(self.lock_ring, 0, 58, "", 0.38, ui.C_WHITE)
+    self.lock_shield_bg = ui.box(self.lock_ring, 0, -52, 92, 8, ui.C_BG)
+    self.lock_shield_fill = ui.box(self.lock_shield_bg, -46, 0, 92, 8, ui.C_AQUA)
+    gui.set_pivot(self.lock_shield_fill, gui.PIVOT_W)
+    self.lock_hull_bg = ui.box(self.lock_ring, 0, -62, 92, 8, ui.C_BG)
+    self.lock_hull_fill = ui.box(self.lock_hull_bg, -46, 0, 92, 8, ui.C_CORAL)
+    gui.set_pivot(self.lock_hull_fill, gui.PIVOT_W)
+    self.lead_pip = ui.box(self.root, 960, 540, 32, 32, ui.C_GOLD, "lead_pip")
+
+    -- Off-screen directional arrows (up to 6) & 3 Beacon markers
+    self.arrows = {}
+    for i = 1, 6 do
+        self.arrows[i] = ui.box(self.root, 0, 0, 34, 34, ui.C_CORAL, "arrow_up")
+        gui.set_enabled(self.arrows[i], false)
+    end
+    self.beacon_nodes = {}
+    for i = 1, 3 do
+        local bn = ui.box(self.root, 0, 0, 48, 48, ui.C_AMBER, "lock_ring")
+        local bt = ui.text(bn, 0, 0, string.char(64 + i), 0.48, ui.C_WHITE)
+        gui.set_enabled(bn, false)
+        self.beacon_nodes[i] = { box = bn, txt = bt }
+    end
+
+    -- Player Status (Bottom-Left)
+    self.status_panel = ui.box(self.root, 240, 110, 380, 120, ui.C_BG, "panel_rounded")
+    self.txt_player_meta = ui.text(self.status_panel, -165, 36, "T1 • 0 KILLS", 0.44, ui.C_DIM, gui.PIVOT_W)
+    self.sh_bg = ui.box(self.status_panel, 0, 6, 330, 18, ui.C_CARD)
+    self.sh_fill = ui.box(self.sh_bg, -165, 0, 330, 18, ui.C_AQUA)
+    gui.set_pivot(self.sh_fill, gui.PIVOT_W)
+    self.hp_bg = ui.box(self.status_panel, 0, -24, 330, 18, ui.C_CARD)
+    self.hp_fill = ui.box(self.hp_bg, -165, 0, 330, 18, ui.C_GREEN)
+    gui.set_pivot(self.hp_fill, gui.PIVOT_W)
+
+    -- Virtual Touch Joystick (Left Side)
+    self.stick_base = ui.box(self.root, 260, 290, 190, 190, vmath.vector4(1, 1, 1, 0.35), "stick_base")
+    self.stick_knob = ui.box(self.stick_base, 0, 0, 82, 82, vmath.vector4(0.15, 0.78, 0.85, 0.75), "stick_knob")
+    gui.set_enabled(self.stick_base, false)
+
+    -- Action Buttons (Bottom-Right: Large Dash + Mod1 & Mod2 above it)
+    self.btn_dash, self.node_dash, self.lbl_dash = ui.button(
+        self.druid, self.root, 1740, 150, 150, 150, i18n.t("dash"), ui.C_AQUA, "btn_circle",
+        function() input_state.dash_pressed = true end, 0.48
+    )
+    self.btn_mod1, self.node_mod1, self.lbl_mod1 = ui.button(
+        self.druid, self.root, 1630, 320, 118, 118, "M1", ui.C_ELEV, "btn_circle",
+        function() input_state.mod1_pressed = true end, 0.40
+    )
+    self.btn_mod2, self.node_mod2, self.lbl_mod2 = ui.button(
+        self.druid, self.root, 1800, 320, 118, 118, "M2", ui.C_ELEV, "btn_circle",
+        function() input_state.mod2_pressed = true end, 0.40
+    )
+
+    -- Respawn Banner
+    self.respawn_box = ui.box(self.root, 960, 540, 420, 90, ui.C_BG, "panel_rounded")
+    self.txt_respawn = ui.text(self.respawn_box, 0, 0, "", 0.72, ui.C_CORAL)
+    gui.set_enabled(self.respawn_box, false)
+
+    -- Post-Match Results Overlay
+    self.result_panel = ui.box(self.root, 960, 540, 720, 500, ui.C_BG, "panel_rounded")
+    self.txt_res_title = ui.text(self.result_panel, 0, 185, "VICTORY", 1.15, ui.C_GOLD)
+    self.txt_res_stats = ui.text(self.result_panel, 0, 100, "", 0.62, ui.C_WHITE)
+    self.txt_res_loot = ui.text(self.result_panel, 0, 30, "", 0.68, ui.C_AQUA)
+
+    self.btn_double, self.node_double, self.lbl_double = ui.button(
+        self.druid, self.result_panel, 0, -60, 420, 76, i18n.t("double_loot"), ui.C_AMBER, "panel_rounded",
+        function()
+            local m = match_controller.get_state()
+            if m.result and not m.result.doubled then
+                poki.rewarded_break(function(ok)
+                    if ok and m.result and not m.result.doubled then
+                        m.result.doubled = true
+                        progress.add_rewards(m.result.credits, 0)
+                        m.result.credits = m.result.credits * 2
+                    end
+                end)
+            end
+        end, 0.56
+    )
+
+    self.btn_hangar, _, self.lbl_hangar = ui.button(
+        self.druid, self.result_panel, -170, -170, 290, 82, i18n.t("hangar"), ui.C_ELEV, "panel_rounded",
+        function()
+            poki.try_commercial_break(function()
+                msg.post("/controller#main", "open_hangar")
+            end)
+        end, 0.62
+    )
+    self.btn_next, _, self.lbl_next = ui.button(
+        self.druid, self.result_panel, 170, -170, 290, 82, i18n.t("next_battle"), ui.C_GREEN, "panel_rounded",
+        function()
+            poki.try_commercial_break(function()
+                match_controller.start_match()
+            end)
+        end, 0.62
+    )
+    gui.set_enabled(self.result_panel, false)
+end
+
+function init(self)
+    self.visible = true
+    self.stick_active = false
+    self.stick_origin = vmath.vector3(0, 0, 0)
+    self.is_touch_mode = false
+    build_hud(self)
+end
+
+function final(self)
+    if self.druid then self.druid:final() end
+end
+
+local function update_action_btn(node, lbl, base_lbl, cd, base_color)
+    if cd > 0.05 then
+        gui.set_color(node, ui.C_CARD)
+        gui.set_text(lbl, string.format("%.1f", cd))
+    else
+        gui.set_color(node, base_color)
+        gui.set_text(lbl, base_lbl)
+    end
+end
+
+function update(self, dt)
+    if self.druid then self.druid:update(dt) end
+    if not self.visible then return end
+
+    local m = match_controller.get_state()
+    if not m.active and not m.finished then return end
+
+    -- Update match simulation from main loop; HUD reads state cleanly
+    if m.active then
+        match_controller.update(input_state, dt)
+        input_state.dash_pressed = false
+        input_state.mod1_pressed = false
+        input_state.mod2_pressed = false
+    end
+
+    -- Refresh Top Bar
+    local mode_key = (m.mode == "boss" and "mode_boss") or (m.mode == "domination" and "mode_dom") or "mode_tdm"
+    gui.set_text(self.txt_mode, i18n.t(mode_key))
+    local secs = math.max(0, math.ceil(m.timer))
+    gui.set_text(self.txt_timer, string.format("%02d:%02d", math.floor(secs / 60), secs % 60))
+    if m.mode == "domination" then
+        gui.set_text(self.txt_score_t1, string.format("%d%%", math.floor(m.score_t1)))
+        gui.set_text(self.txt_score_t2, string.format("%d%%", math.floor(m.score_t2)))
+    elseif m.mode == "boss" then
+        gui.set_text(self.txt_score_t1, i18n.t("kills") .. ": " .. m.player_kills)
+        gui.set_text(self.txt_score_t2, "P" .. m.boss_phase .. "/3")
+    else
+        gui.set_text(self.txt_score_t1, tostring(m.score_t1))
+        gui.set_text(self.txt_score_t2, tostring(m.score_t2))
+    end
+
+    -- Boss Bar
+    gui.set_enabled(self.boss_bar_bg, m.mode == "boss")
+    if m.mode == "boss" then
+        local total_hp, cur_hp = 0, 0
+        for _, bp in ipairs(m.boss_parts) do
+            total_hp = total_hp + bp.max_hull
+            if bp.alive then cur_hp = cur_hp + bp.hull end
+        end
+        local pct = total_hp > 0 and (cur_hp / total_hp) or 0
+        gui.set_scale(self.boss_bar_fill, vmath.vector3(math.max(0.001, pct), 1, 1))
+        local pk = (m.boss_phase == 1 and "boss_gen") or (m.boss_phase == 2 and "boss_turret") or "boss_reactor"
+        gui.set_text(self.txt_boss_phase, i18n.t(pk))
+    end
+
+    -- Hint Banner
+    gui.set_enabled(self.hint_bg, m.hint_timer > 0 and m.active)
+    if m.hint_timer > 0 then
+        gui.set_text(self.txt_hint, i18n.t(m.mode == "boss" and "hint_dreadnought" or "hint_first_15"))
+    end
+
+    -- Player Status & Buttons
+    local p = m.player
+    if p then
+        local sh_pct = p.max_shield > 0 and (p.shield / p.max_shield) or 0
+        local hp_pct = p.max_hull > 0 and (p.hull / p.max_hull) or 0
+        gui.set_scale(self.sh_fill, vmath.vector3(math.max(0.001, sh_pct), 1, 1))
+        gui.set_scale(self.hp_fill, vmath.vector3(math.max(0.001, hp_pct), 1, 1))
+        gui.set_text(self.txt_player_meta, string.format("T%d • %s: %d", p.tier, i18n.t("kills"), m.player_kills))
+
+        update_action_btn(self.node_dash, self.lbl_dash, i18n.t("dash"), p.dash_cd, ui.C_AQUA)
+        update_action_btn(self.node_mod1, self.lbl_mod1, i18n.t("mod_" .. p.mod1), p.mod1_cd, ui.C_ELEV)
+        update_action_btn(self.node_mod2, self.lbl_mod2, i18n.t("mod_" .. p.mod2), p.mod2_cd, ui.C_ELEV)
+
+        gui.set_enabled(self.respawn_box, not p.alive and m.active)
+        if not p.alive then
+            gui.set_text(self.txt_respawn, string.format("%s %.1fs", i18n.t("respawn_in"), math.max(0, p.respawn_timer)))
+        end
+
+        -- Soft Lock-On Target Marker + Lead Pip
+        local lt = p.locked_target
+        if p.alive and lt and lt.alive then
+            local sx, sy, in_front = camera_rig.world_to_screen(lt.pos.x, lt.pos.y, lt.pos.z)
+            gui.set_enabled(self.lock_ring, in_front)
+            if in_front then
+                gui.set_position(self.lock_ring, vmath.vector3(sx, sy, 0))
+                local t_sh = (lt.max_shield and lt.max_shield > 0) and (lt.shield / lt.max_shield) or 0
+                local t_hp = (lt.max_hull and lt.max_hull > 0) and (lt.hull / lt.max_hull) or 0
+                gui.set_scale(self.lock_shield_fill, vmath.vector3(math.max(0.001, t_sh), 1, 1))
+                gui.set_scale(self.lock_hull_fill, vmath.vector3(math.max(0.001, t_hp), 1, 1))
+                local label = lt.is_boss_part and i18n.t("locked") or ((lt.flag ~= "" and lt.flag .. " " or "") .. lt.name)
+                gui.set_text(self.lock_name, label)
+            end
+            local lp = lt.pos
+            if lt.vel then
+                local dist = vmath.length(lt.pos - p.pos)
+                local t = math.min(1.5, dist / math.max(1, p.proj_speed))
+                lp = lt.pos + lt.vel * t
+            end
+            local lx, ly, l_front = camera_rig.world_to_screen(lp.x, lp.y, lp.z)
+            gui.set_enabled(self.lead_pip, l_front)
+            if l_front then gui.set_position(self.lead_pip, vmath.vector3(lx, ly, 0)) end
+            gui.set_color(self.reticle, ui.C_CORAL)
+        else
+            gui.set_enabled(self.lock_ring, false)
+            gui.set_enabled(self.lead_pip, false)
+            gui.set_color(self.reticle, vmath.vector4(0.15, 0.78, 0.85, 0.55))
+        end
+    end
+
+    -- Off-Screen Enemy / Boss Markers
+    local arrow_idx = 1
+    local function show_marker(pos, color)
+        if arrow_idx > 6 then return end
+        local sx, sy, in_front = camera_rig.world_to_screen(pos.x, pos.y, pos.z)
+        if in_front and sx > 80 and sx < 1840 and sy > 80 and sy < 1000 then return end
+        local dx, dy = sx - 960, sy - 540
+        local len = math.sqrt(dx * dx + dy * dy)
+        if len < 0.001 then dx, dy, len = 0, 1, 1 end
+        local nx, ny = dx / len, dy / len
+        local px = 960 + nx * 780
+        local py = 540 + ny * 430
+        local arr = self.arrows[arrow_idx]
+        arrow_idx = arrow_idx + 1
+        gui.set_enabled(arr, true)
+        gui.set_position(arr, vmath.vector3(px, py, 0))
+        gui.set_color(arr, color)
+        local ang = math.atan2(ny, nx) - math.pi * 0.5
+        gui.set_rotation(arr, vmath.vector3(0, 0, math.deg(ang)))
+    end
+
+    if m.mode == "boss" then
+        for _, bp in ipairs(m.boss_parts) do
+            if bp.alive and bp.targetable then show_marker(bp.pos, ui.C_AMBER) end
+        end
+    else
+        for i = 1, #m.ships do
+            local s = m.ships[i]
+            if s.alive and s.team == 2 then show_marker(s.pos, ui.C_CORAL) end
+        end
+    end
+    for i = arrow_idx, 6 do gui.set_enabled(self.arrows[i], false) end
+
+    -- Beacon Floating Icons (Domination)
+    for i = 1, 3 do
+        local bn = self.beacon_nodes[i]
+        local b = m.beacons[i]
+        if m.mode == "domination" and b then
+            local sx, sy, in_front = camera_rig.world_to_screen(b.pos.x, b.pos.y, b.pos.z)
+            gui.set_enabled(bn.box, in_front)
+            if in_front then
+                gui.set_position(bn.box, vmath.vector3(sx, sy, 0))
+                local c = (b.owner == 1 and ui.C_AQUA) or (b.owner == 2 and ui.C_CORAL) or ui.C_AMBER
+                gui.set_color(bn.box, c)
+            end
+        else
+            gui.set_enabled(bn.box, false)
+        end
+    end
+
+    -- Post-Match Result Overlay
+    gui.set_enabled(self.result_panel, m.finished)
+    if m.finished and m.result then
+        local r = m.result
+        gui.set_text(self.txt_res_title, i18n.t(r.won and "victory" or "defeat"))
+        gui.set_color(self.txt_res_title, r.won and ui.C_GOLD or ui.C_CORAL)
+        gui.set_text(self.txt_res_stats, string.format("%s: %d", i18n.t("kills"), r.kills))
+        gui.set_text(self.txt_res_loot, string.format("+%d %s   +%d %s", r.credits, i18n.t("credits"), r.parts, i18n.t("parts")))
+        gui.set_enabled(self.node_double, not r.doubled)
+        gui.set_text(self.lbl_double, i18n.t("double_loot"))
+        gui.set_text(self.lbl_hangar, i18n.t("hangar"))
+        gui.set_text(self.lbl_next, i18n.t("next_battle"))
+    end
+end
+
+function on_input(self, action_id, action)
+    if not self.visible then return false end
+    if self.druid and self.druid:on_input(action_id, action) then
+        return true
+    end
+
+    local m = match_controller.get_state()
+    if not m.active then return false end
+
+    if action_id == DASH and action.pressed then
+        poki.gameplay_start()
+        input_state.dash_pressed = true
+        return true
+    elseif action_id == MOD1 and action.pressed then
+        poki.gameplay_start()
+        input_state.mod1_pressed = true
+        return true
+    elseif action_id == MOD2 and action.pressed then
+        poki.gameplay_start()
+        input_state.mod2_pressed = true
+        return true
+    elseif action_id == TOUCH then
+        poki.gameplay_start()
+        local vx = (action.screen_x / math.max(1, select(1, window.get_size()))) * 1920
+        local vy = (action.screen_y / math.max(1, select(2, window.get_size()))) * 1080
+        if action.pressed then
+            if vx < 960 and self.is_touch_mode then
+                self.stick_active = true
+                self.stick_origin = vmath.vector3(vx, vy, 0)
+                gui.set_enabled(self.stick_base, true)
+                gui.set_position(self.stick_base, self.stick_origin)
+                gui.set_position(self.stick_knob, vmath.vector3(0, 0, 0))
+            else
+                input_state.fire_held = true
+            end
+        elseif action.released then
+            input_state.fire_held = false
+            if self.stick_active then
+                self.stick_active = false
+                gui.set_enabled(self.stick_base, false)
+                input_state.steer_x = 0
+                input_state.steer_y = 0
+            end
+        elseif self.stick_active then
+            local dx = vx - self.stick_origin.x
+            local dy = vy - self.stick_origin.y
+            local max_r = 85.0
+            local d = math.sqrt(dx * dx + dy * dy)
+            if d > max_r then
+                dx = dx * (max_r / d)
+                dy = dy * (max_r / d)
+            end
+            gui.set_position(self.stick_knob, vmath.vector3(dx, dy, 0))
+            input_state.steer_x = dx / max_r
+            input_state.steer_y = dy / max_r
+        end
+        return true
+    elseif action_id == nil and not self.stick_active then
+        -- Mouse move steering on desktop
+        local win_w, win_h = window.get_size()
+        if win_w > 0 and win_h > 0 and action.screen_x then
+            local nx = ((action.screen_x / win_w) - 0.5) * 2.0
+            local ny = ((action.screen_y / win_h) - 0.5) * 2.0
+            input_state.steer_x = math.max(-1, math.min(1, nx * 1.15))
+            input_state.steer_y = math.max(-1, math.min(1, ny * 1.15))
+            if math.abs(nx) > 0.08 or math.abs(ny) > 0.08 then
+                poki.gameplay_start()
+            end
+        end
+    end
+    return false
+end
+
+function on_message(self, message_id, message)
+    if message_id == hash("set_visible") then
+        self.visible = message.visible and true or false
+        gui.set_visible(self.root, self.visible)
+        reset_input()
+        local info = sys.get_sys_info()
+        self.is_touch_mode = (info.system_name == "Android" or info.system_name == "iPhone OS")
+        if self.visible then
+            gui.set_text(self.lbl_dash, i18n.t("dash"))
+        end
+    end
+end

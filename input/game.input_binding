@@ -1,0 +1,40 @@
+mouse_trigger {
+  input: MOUSE_BUTTON_1
+  action: "touch"
+}
+mouse_trigger {
+  input: MOUSE_BUTTON_2
+  action: "mod1"
+}
+key_trigger {
+  input: KEY_LSHIFT
+  action: "dash"
+}
+key_trigger {
+  input: KEY_RSHIFT
+  action: "dash"
+}
+key_trigger {
+  input: KEY_SPACE
+  action: "dash"
+}
+key_trigger {
+  input: KEY_1
+  action: "mod1"
+}
+key_trigger {
+  input: KEY_2
+  action: "mod2"
+}
+key_trigger {
+  input: KEY_BACK
+  action: "key_back"
+}
+key_trigger {
+  input: KEY_ESC
+  action: "pause"
+}
+touch_trigger {
+  input: TOUCH_MULTI
+  action: "touch_multi"
+}

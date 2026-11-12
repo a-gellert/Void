@@ -1,0 +1,245 @@
+local druid = require("druid.druid")
+local ui = require("gui.ui_helper")
+local ships_db = require("data.ships_db")
+local i18n = require("modules.i18n")
+local progress = require("modules.progress")
+local audio = require("modules.audio")
+local poki = require("modules.poki")
+
+local M_UPGRADE_KEYS = { "hull", "weapon", "shield", "engine" }
+
+local function refresh_hangar(self)
+    local s = progress.get()
+    local cid = s.selected_class
+    local u = s.upgrades[cid]
+    local stats = ships_db.get_effective_stats(cid, progress.get_player_upgrades(cid))
+
+    gui.set_text(self.txt_title, i18n.t("game_title"))
+    gui.set_text(self.txt_wallet, string.format("%s: %d   •   %s: %d", i18n.t("credits"), s.credits, i18n.t("parts"), s.parts))
+    gui.set_text(self.lbl_lang, i18n.t("language") .. ": " .. string.upper(i18n.get_language()))
+    gui.set_text(self.lbl_sound, i18n.t("sound") .. ": " .. i18n.t(audio.is_muted() and "off" or "on"))
+
+    -- Class buttons
+    for _, key in ipairs(ships_db.CLASS_ORDER) do
+        local c = self.class_cards[key]
+        local selected = (key == cid)
+        gui.set_color(c.node, selected and ui.C_AQUA or ui.C_CARD)
+        gui.set_text(c.lbl_name, i18n.t("class_" .. key))
+        gui.set_text(c.lbl_role, i18n.t("role_" .. key))
+    end
+
+    gui.set_text(self.txt_ship_tier, string.format("%s  T%d", i18n.t("class_" .. cid), stats.tier))
+
+    -- Upgrade rows
+    for _, node_key in ipairs(M_UPGRADE_KEYS) do
+        local row = self.upg_rows[node_key]
+        local lv = u[node_key]
+        local can, cost = progress.can_upgrade(cid, node_key)
+        gui.set_text(row.lbl_name, string.format("%s  T%d/5", i18n.t(node_key), lv))
+        gui.set_scale(row.fill, vmath.vector3(lv / 5.0, 1, 1))
+        if lv >= 5 then
+            gui.set_text(row.lbl_btn, i18n.t("max_lv"))
+            gui.set_color(row.btn_node, ui.C_CARD)
+        else
+            gui.set_text(row.lbl_btn, tostring(cost))
+            gui.set_color(row.btn_node, can and ui.C_GREEN or ui.C_ELEV)
+        end
+    end
+
+    -- Skins & Trails
+    gui.set_text(self.txt_skins_hdr, i18n.t("skins"))
+    gui.set_text(self.txt_trails_hdr, i18n.t("trails"))
+    for i = 1, 24 do
+        local sw = self.skin_swatches[i]
+        local unlocked = s.unlocked_skins[i]
+        local c = ships_db.SKINS[i].preview
+        local alpha = unlocked and 1.0 or 0.25
+        gui.set_color(sw.fill, vmath.vector4(c[1], c[2], c[3], alpha))
+        gui.set_color(sw.border, (s.equipped_skin == i) and ui.C_WHITE or ui.C_BG)
+    end
+    for i = 1, 12 do
+        local sw = self.trail_swatches[i]
+        local unlocked = s.unlocked_trails[i]
+        local c = ships_db.TRAILS[i].color
+        local alpha = unlocked and 1.0 or 0.25
+        gui.set_color(sw.fill, vmath.vector4(c[1], c[2], c[3], alpha))
+        gui.set_color(sw.border, (s.equipped_trail == i) and ui.C_WHITE or ui.C_BG)
+    end
+
+    gui.set_text(self.lbl_rand_skin, i18n.t("random_skin"))
+    gui.set_text(self.lbl_test_drive, s.test_drive_active and i18n.t("test_drive_active") or i18n.t("test_drive"))
+    gui.set_color(self.node_test_drive, s.test_drive_active and ui.C_GOLD or ui.C_AMBER)
+
+    local next_num = s.match_count + 1
+    local mode_hint = (next_num % 5 == 0) and i18n.t("mode_boss") or ((next_num % 2 == 0) and i18n.t("mode_dom") or i18n.t("mode_tdm"))
+    gui.set_text(self.lbl_battle, i18n.t("battle") .. " • " .. mode_hint)
+
+    msg.post("/controller#main", "refresh_hangar_preview")
+end
+
+local function build_hangar(self)
+    if self.root then gui.delete_node(self.root) end
+    if self.druid then self.druid:final() end
+    self.druid = druid.new(self)
+
+    self.root = ui.box(nil, 0, 0, 0, 0, vmath.vector4(0, 0, 0, 0))
+    gui.set_visible(self.root, self.visible)
+
+    -- Top Bar
+    local top = ui.box(self.root, 960, 1024, 1860, 82, ui.C_BG, "panel_rounded")
+    self.txt_title = ui.text(top, -880, 0, "VOID CLASH 3D", 0.72, ui.C_AQUA, gui.PIVOT_W)
+    self.txt_wallet = ui.text(top, -120, 0, "", 0.60, ui.C_GOLD, gui.PIVOT_CENTER)
+    self.btn_lang, _, self.lbl_lang = ui.button(self.druid, top, 580, 0, 190, 56, "LANG", ui.C_ELEV, "panel_rounded", function()
+        local nxt = i18n.cycle_language()
+        progress.get().language = nxt
+        progress.save()
+        refresh_hangar(self)
+    end, 0.46)
+    self.btn_sound, _, self.lbl_sound = ui.button(self.druid, top, 800, 0, 210, 56, "SOUND", ui.C_ELEV, "panel_rounded", function()
+        local muted = not audio.is_muted()
+        audio.set_muted(muted)
+        progress.get().muted = muted
+        progress.save()
+        refresh_hangar(self)
+    end, 0.46)
+
+    -- Left Panel: Classes + T1-T5 Upgrades
+    local left = ui.box(self.root, 310, 510, 540, 870, ui.C_BG, "panel_rounded")
+    self.class_cards = {}
+    for idx, key in ipairs(ships_db.CLASS_ORDER) do
+        local y = 340 - (idx - 1) * 102
+        local btn, node, lbl = ui.button(self.druid, left, 0, y, 490, 88, "", ui.C_CARD, "panel_rounded", function()
+            progress.get().selected_class = key
+            progress.save()
+            refresh_hangar(self)
+        end, 0.56)
+        gui.set_position(lbl, vmath.vector3(-220, 16, 0))
+        gui.set_pivot(lbl, gui.PIVOT_W)
+        local role = ui.text(node, -220, -18, "", 0.36, ui.C_DIM, gui.PIVOT_W)
+        self.class_cards[key] = { btn = btn, node = node, lbl_name = lbl, lbl_role = role }
+    end
+
+    self.upg_rows = {}
+    for idx, node_key in ipairs(M_UPGRADE_KEYS) do
+        local y = -10 - (idx - 1) * 96
+        local row_bg = ui.box(left, 0, y, 490, 82, ui.C_CARD, "panel_rounded")
+        local lbl_name = ui.text(row_bg, -225, 18, "", 0.44, ui.C_WHITE, gui.PIVOT_W)
+        local bar_bg = ui.box(row_bg, -95, -16, 250, 14, ui.C_BG)
+        local fill = ui.box(bar_bg, -125, 0, 250, 14, ui.C_AQUA)
+        gui.set_pivot(fill, gui.PIVOT_W)
+        local _, btn_node, lbl_btn = ui.button(self.druid, row_bg, 165, 0, 130, 56, "150", ui.C_GREEN, "panel_rounded", function()
+            if progress.upgrade_node(progress.get().selected_class, node_key) then
+                refresh_hangar(self)
+            end
+        end, 0.50)
+        self.upg_rows[node_key] = { lbl_name = lbl_name, fill = fill, btn_node = btn_node, lbl_btn = lbl_btn }
+    end
+
+    -- Center Ship Tier Label above 3D Preview
+    self.txt_ship_tier = ui.text(self.root, 960, 890, "", 0.72, ui.C_WHITE)
+
+    -- Right Panel: 24 Skins + 12 Trails
+    local right = ui.box(self.root, 1630, 560, 500, 770, ui.C_BG, "panel_rounded")
+    self.txt_skins_hdr = ui.text(right, -220, 345, "SKINS", 0.52, ui.C_AQUA, gui.PIVOT_W)
+    self.skin_swatches = {}
+    for i = 1, 24 do
+        local col = (i - 1) % 6
+        local row = math.floor((i - 1) / 6)
+        local sx = -180 + col * 72
+        local sy = 285 - row * 68
+        local border = ui.box(right, sx, sy, 60, 56, ui.C_BG, "panel_rounded")
+        local fill = ui.box(border, 0, 0, 50, 46, ui.C_WHITE, "panel_rounded")
+        self.druid:new_button(border, function()
+            local s = progress.get()
+            if s.unlocked_skins[i] then
+                audio.play("ui_click", 0.5)
+                s.equipped_skin = i
+                progress.save()
+                refresh_hangar(self)
+            end
+        end)
+        self.skin_swatches[i] = { border = border, fill = fill }
+    end
+
+    self.txt_trails_hdr = ui.text(right, -220, 0, "TRAILS", 0.52, ui.C_AQUA, gui.PIVOT_W)
+    self.trail_swatches = {}
+    for i = 1, 12 do
+        local col = (i - 1) % 6
+        local row = math.floor((i - 1) / 6)
+        local sx = -180 + col * 72
+        local sy = -60 - row * 68
+        local border = ui.box(right, sx, sy, 60, 56, ui.C_BG, "panel_rounded")
+        local fill = ui.box(border, 0, 0, 50, 46, ui.C_WHITE, "panel_rounded")
+        self.druid:new_button(border, function()
+            local s = progress.get()
+            if s.unlocked_trails[i] then
+                audio.play("ui_click", 0.5)
+                s.equipped_trail = i
+                progress.save()
+                refresh_hangar(self)
+            end
+        end)
+        self.trail_swatches[i] = { border = border, fill = fill }
+    end
+
+    self.btn_rand_skin, _, self.lbl_rand_skin = ui.button(self.druid, right, 0, -255, 440, 74, "RANDOM SKIN (AD)", ui.C_CORAL, "panel_rounded", function()
+        poki.rewarded_break(function(ok)
+            if ok then
+                progress.unlock_random_cosmetic()
+                refresh_hangar(self)
+            end
+        end)
+    end, 0.46)
+
+    -- Bottom Center/Right: Test Drive & Battle CTA
+    self.btn_test_drive, self.node_test_drive, self.lbl_test_drive = ui.button(
+        self.druid, self.root, 960, 145, 420, 72, "TEST DRIVE +1 TIER", ui.C_AMBER, "panel_rounded",
+        function()
+            local s = progress.get()
+            if not s.test_drive_active then
+                poki.rewarded_break(function(ok)
+                    if ok then
+                        s.test_drive_active = true
+                        refresh_hangar(self)
+                    end
+                end)
+            end
+        end, 0.46
+    )
+
+    self.btn_battle, _, self.lbl_battle = ui.button(
+        self.druid, self.root, 1630, 100, 500, 108, "BATTLE", ui.C_GREEN, "panel_rounded",
+        function()
+            msg.post("/controller#main", "start_battle")
+        end, 0.62
+    )
+end
+
+function init(self)
+    self.visible = false
+    build_hangar(self)
+end
+
+function final(self)
+    if self.druid then self.druid:final() end
+end
+
+function update(self, dt)
+    if self.druid then self.druid:update(dt) end
+end
+
+function on_input(self, action_id, action)
+    if not self.visible then return false end
+    if self.druid then return self.druid:on_input(action_id, action) end
+    return false
+end
+
+function on_message(self, message_id, message)
+    if message_id == hash("set_visible") then
+        self.visible = message.visible and true or false
+        gui.set_visible(self.root, self.visible)
+        if self.visible then
+            refresh_hangar(self)
+        end
+    end
+end

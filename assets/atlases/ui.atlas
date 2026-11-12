@@ -1,0 +1,30 @@
+images {
+  image: "/assets/ui/white.png"
+}
+images {
+  image: "/assets/ui/panel_rounded.png"
+}
+images {
+  image: "/assets/ui/reticle.png"
+}
+images {
+  image: "/assets/ui/lock_ring.png"
+}
+images {
+  image: "/assets/ui/lead_pip.png"
+}
+images {
+  image: "/assets/ui/stick_base.png"
+}
+images {
+  image: "/assets/ui/stick_knob.png"
+}
+images {
+  image: "/assets/ui/btn_circle.png"
+}
+images {
+  image: "/assets/ui/arrow_up.png"
+}
+margin: 2
+extrude_borders: 2
+inner_padding: 0

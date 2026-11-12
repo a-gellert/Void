@@ -1,0 +1,12 @@
+script: "/gui/hud_combat.gui_script"
+fonts {
+  name: "main"
+  font: "/assets/fonts/main.font"
+}
+textures {
+  name: "ui"
+  texture: "/assets/atlases/ui.atlas"
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_DISABLED
+max_nodes: 512
