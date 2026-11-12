@@ -9,7 +9,13 @@ M.DAMAGE_MULT = {
 
 M.UPGRADE_COSTS = {
     credits = { 0, 150, 350, 700, 1250 },
-    parts = { 0, 1, 3, 6, 10 },
+    parts = { 0, 0, 3, 6, 10 },
+}
+
+M.CRAFT_COSTS = {
+    random = 2,
+    trail = 3,
+    skin = 4,
 }
 
 M.CLASSES = {
@@ -127,6 +133,7 @@ function M.get_effective_stats(class_id, upgrades)
     local avg_tier = math.floor((hull_lv + weap_lv + shield_lv + eng_lv) / 4 + 0.5)
     avg_tier = math.max(1, math.min(5, avg_tier))
 
+    local damage = base.weapon_damage * (1 + 0.15 * (weap_lv - 1))
     return {
         class_id = base.id,
         tier = avg_tier,
@@ -136,7 +143,8 @@ function M.get_effective_stats(class_id, upgrades)
         engine_lv = eng_lv,
         max_hull = math.floor(base.hull * (1 + 0.15 * (hull_lv - 1)) + 0.5),
         max_shield = math.floor(base.shield * (1 + 0.15 * (shield_lv - 1)) + 0.5),
-        damage = base.weapon_damage * (1 + 0.15 * (weap_lv - 1)),
+        damage = damage,
+        dps = math.floor(damage * base.weapon_rate + 0.5),
         speed = base.speed * (1 + 0.07 * (eng_lv - 1)),
         boost_speed = base.boost_speed * (1 + 0.07 * (eng_lv - 1)),
         turn_rate = base.turn_rate * (1 + 0.05 * (eng_lv - 1)),

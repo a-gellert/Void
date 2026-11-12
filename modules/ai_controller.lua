@@ -60,11 +60,17 @@ local function compute_avoidance(pos, obstacles)
     local ax, ay, az = 0, 0, 0
     for i = 1, #obstacles do
         local obs = obstacles[i]
-        local dx = pos.x - obs.x
-        local dy = pos.y - obs.y
-        local dz = pos.z - obs.z
-        local avoid_r = obs.r + 18.0
-        local d_sq = dx * dx + dy * dy + dz * dz
+        local dx, dy, dz, d_sq, avoid_r
+        if obs.kind == "torus" then
+            dx, dy, dz, d_sq = flight_physics.torus_closest_offset(pos.x, pos.y, pos.z, obs)
+            avoid_r = obs.minor_r + 14.0
+        else
+            dx = pos.x - obs.x
+            dy = pos.y - obs.y
+            dz = pos.z - obs.z
+            d_sq = dx * dx + dy * dy + dz * dz
+            avoid_r = obs.r + 18.0
+        end
         if d_sq < avoid_r * avoid_r and d_sq > 0.001 then
             local d = math.sqrt(d_sq)
             local strength = (avoid_r - d) / avoid_r
@@ -76,12 +82,42 @@ local function compute_avoidance(pos, obstacles)
     return ax, ay, az
 end
 
+local function has_boss_telegraph(bot, boss_parts, mode)
+    if mode ~= "boss" or not boss_parts then return false end
+    for i = 1, #boss_parts do
+        local bp = boss_parts[i]
+        if bp.alive and bp.salvo_telegraph and bp.salvo_telegraph > 0 and bp.salvo_telegraph <= 0.45 and bp.salvo_target == bot then
+            return true
+        end
+    end
+    return false
+end
+
 function M.update_bot(bot, all_ships, beacons, boss_parts, mode, time_now, dt)
     if not bot.alive then return end
 
     local arch = bots_db.ARCHETYPES[bot.archetype] or bots_db.ARCHETYPES.tactician
     local target, nav_point = pick_target(bot, all_ships, beacons, boss_parts, mode)
     bot.locked_target = target
+
+    -- Reactive Dash & evasive maneuver on incoming missiles or heavy fire
+    local missile_threat = combat_manager.has_incoming_missile(bot) or has_boss_telegraph(bot, boss_parts, mode)
+    local heavy_fire = (bot.under_fire_timer or 0) > 0 and ((bot.recent_dmg or 0) >= bot.max_hull * 0.16 or (bot.shield <= 0 and bot.hull < bot.max_hull * 0.65))
+    if bot.dash_cd <= 0 then
+        local trigger = false
+        if missile_threat and math.random() < (3.2 + arch.dash_chance * 3.0) * dt then
+            trigger = true
+        elseif heavy_fire and math.random() < (1.4 + arch.dash_chance * 2.2) * dt then
+            trigger = true
+        end
+        if trigger and combat_manager.activate_dash(bot) then
+            bot.evade_timer = 0.8
+            bot.recent_dmg = 0
+            if math.random() < 0.5 then
+                bot.evade_sign = -(bot.evade_sign or 1)
+            end
+        end
+    end
 
     local goal_pos = nav_point
     if not goal_pos and target then
@@ -99,6 +135,13 @@ function M.update_bot(bot, all_ships, beacons, boss_parts, mode, time_now, dt)
     end
 
     local desired = math3d.normalize_or_default(goal_pos - bot.pos, bot.forward)
+    if bot.evade_timer and bot.evade_timer > 0 then
+        bot.evade_timer = math.max(0, bot.evade_timer - dt)
+        local sign = bot.evade_sign or 1
+        desired.x = desired.x + (-bot.forward.z) * sign * 1.35
+        desired.y = desired.y + 0.35 * sign
+        desired.z = desired.z + bot.forward.x * sign * 1.35
+    end
     local ax, ay, az = compute_avoidance(bot.pos, flight_physics.get_obstacles())
     desired.x = desired.x + ax
     desired.y = desired.y + ay

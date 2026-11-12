@@ -12,10 +12,11 @@ local active_lasers = {}
 local active_missiles = {}
 local on_kill_callback = nil
 local on_boss_part_killed = nil
+local on_hit_callback = nil
 
 local LOCK_SCREEN_RADIUS = 175.0
 
-function M.reset(kill_cb, boss_part_cb)
+function M.reset(kill_cb, boss_part_cb, hit_cb)
     for i = #active_lasers, 1, -1 do
         pool_manager.release_laser(active_lasers[i].pool_item)
         active_lasers[i] = nil
@@ -26,6 +27,7 @@ function M.reset(kill_cb, boss_part_cb)
     end
     on_kill_callback = kill_cb
     on_boss_part_killed = boss_part_cb
+    on_hit_callback = hit_cb
 end
 
 function M.break_missile_locks(target_entity)
@@ -34,6 +36,17 @@ function M.break_missile_locks(target_entity)
             active_missiles[i].target = nil
         end
     end
+end
+
+function M.has_incoming_missile(entity)
+    if not entity then return false, 0 end
+    local count = 0
+    for i = 1, #active_missiles do
+        if active_missiles[i].target == entity then
+            count = count + 1
+        end
+    end
+    return count > 0, count
 end
 
 local function spawn_laser(owner, pos, dir, speed, damage, weapon_type, range, color)
@@ -56,25 +69,26 @@ local function spawn_laser(owner, pos, dir, speed, damage, weapon_type, range, c
     }
 end
 
-local function spawn_missile(owner, pos, dir, target, damage)
+local function spawn_missile(owner, pos, dir, target, damage, opts)
     local item = pool_manager.acquire_missile()
     if not item then return end
     local mod = modules_db.MODULES.micromissiles
     local rot = math3d.quat_from_forward(dir, 0)
+    local c = (opts and opts.color) or { 1.0, 0.55, 0.20 }
     go.set_position(pos, item.id)
     go.set_rotation(rot, item.id)
-    go.set(item.url, "tint", vmath.vector4(1.0, 0.55, 0.20, 1.0))
+    go.set(item.url, "tint", vmath.vector4(c[1], c[2], c[3], 1.0))
     active_missiles[#active_missiles + 1] = {
         pool_item = item,
         owner = owner,
         team = owner.team,
         pos = vmath.vector3(pos.x, pos.y, pos.z),
         forward = vmath.vector3(dir.x, dir.y, dir.z),
-        speed = mod.speed,
-        turn_rate = mod.turn_rate,
+        speed = (opts and opts.speed) or mod.speed,
+        turn_rate = (opts and opts.turn_rate) or mod.turn_rate,
         target = target,
         damage = damage,
-        life = mod.life,
+        life = (opts and opts.life) or mod.life,
     }
 end
 
@@ -84,6 +98,7 @@ function M.apply_damage(target, raw_damage, weapon_type, attacker)
 
     -- Boss shield protection check
     if target.is_boss_part and target.shielded then
+        target.shield_hit_flash = 1.0
         pool_manager.spawn_vfx(target.pos, 0.25, 0.72, 1.0, 4.5, 0.25)
         return
     end
@@ -96,6 +111,10 @@ function M.apply_damage(target, raw_damage, weapon_type, attacker)
 
     target.shield_regen_delay = 3.0
     target.hit_flash = 1.0
+    if not target.is_boss_part then
+        target.under_fire_timer = 0.85
+        target.recent_dmg = (target.recent_dmg or 0) + dmg
+    end
 
     if target.shield and target.shield > 0 then
         local shield_dmg = dmg * mult.shield
@@ -113,10 +132,16 @@ function M.apply_damage(target, raw_damage, weapon_type, attacker)
         target.hull = target.hull - dmg * mult.hull
     end
 
-    if target.hull <= 0 then
+    local is_kill = target.hull <= 0
+    if attacker and attacker.is_player and target.team ~= attacker.team and on_hit_callback then
+        on_hit_callback(target, attacker, is_kill)
+    end
+
+    if is_kill then
         target.hull = 0
         target.alive = false
         target.respawn_timer = 2.0
+        M.break_missile_locks(target)
         pool_manager.spawn_vfx(target.pos, 1.0, 0.55, 0.15, (target.radius or 4) * 3.2, 0.55)
         if target.is_player or (attacker and attacker.is_player) then
             camera_rig.add_shake(target.is_boss_part and 0.85 or 0.55)
@@ -156,6 +181,10 @@ function M.acquire_player_lock(player, enemies, boss_parts)
     for i = 1, #enemies do check_candidate(enemies[i]) end
     if boss_parts then
         for i = 1, #boss_parts do check_candidate(boss_parts[i]) end
+    end
+    local prev = player.locked_target
+    if best and best ~= prev then
+        audio.play("lock", 0.40)
     end
     player.locked_target = best
     return best
@@ -199,6 +228,29 @@ function M.fire_turret(turret, target_ship)
     spawn_laser(turret, turret.pos + dir * 4.5, dir, 210, turret.damage, "plasma", 260, { 1.0, 0.25, 0.15 })
 end
 
+function M.fire_turret_salvo(turret, target_ship, count)
+    if not turret.alive or not target_ship or not target_ship.alive then return end
+    local dir = math3d.normalize_or_default(target_ship.pos - turret.pos)
+    turret.rot = math3d.quat_from_forward(dir, 0)
+    local n = count or 2
+    local dmg = (turret.damage or 18) * 1.35
+    local opts = {
+        speed = 118,
+        turn_rate = 3.8,
+        life = 4.2,
+        color = { 1.0, 0.22, 0.12 },
+    }
+    local right = math3d.normalize_or_default(vmath.cross(dir, vmath.vector3(0, 1, 0)), vmath.vector3(1, 0, 0))
+    for i = 1, n do
+        local spread = (i - (n + 1) * 0.5) * 2.4
+        local spawn_pos = turret.pos + dir * 5.0 + right * spread + vmath.vector3(0, 1.5, 0)
+        local launch_dir = math3d.normalize_or_default(dir + right * (spread * 0.08) + vmath.vector3(0, 0.14, 0), dir)
+        spawn_missile(turret, spawn_pos, launch_dir, target_ship, dmg, opts)
+    end
+    pool_manager.spawn_vfx(turret.pos + dir * 4.5, 1.0, 0.32, 0.12, 6.0, 0.35)
+    audio.play("missile", 0.65)
+end
+
 function M.activate_dash(ship)
     if not ship.alive or ship.dash_cd > 0 then return false end
     local cfg = modules_db.DASH
@@ -236,6 +288,9 @@ function M.activate_module(ship, slot_idx, all_ships, boss_parts)
                     other.shield = 0
                     other.shield_regen_delay = cfg.block_regen
                     other.hit_flash = 1.0
+                    if ship.is_player and on_hit_callback then
+                        on_hit_callback(other, ship, false)
+                    end
                 end
             end
         end
@@ -298,6 +353,21 @@ function M.activate_module(ship, slot_idx, all_ships, boss_parts)
     return true
 end
 
+local function point_hits_obstacle(pos, obstacles)
+    for o = 1, #obstacles do
+        local obs = obstacles[o]
+        if obs.kind == "torus" then
+            local _, _, _, d_sq = flight_physics.torus_closest_offset(pos.x, pos.y, pos.z, obs)
+            if d_sq <= obs.minor_r * obs.minor_r then
+                return true
+            end
+        elseif not obs.is_boss_hull and math3d.dist_sq(pos.x, pos.y, pos.z, obs.x, obs.y, obs.z) <= obs.r * obs.r then
+            return true
+        end
+    end
+    return false
+end
+
 function M.update(all_ships, boss_parts, dt)
     local obstacles = flight_physics.get_obstacles()
 
@@ -341,14 +411,8 @@ function M.update(all_ships, boss_parts, dt)
         end
 
         -- Check asteroids
-        if not hit then
-            for o = 1, #obstacles do
-                local obs = obstacles[o]
-                if math3d.dist_sq(l.pos.x, l.pos.y, l.pos.z, obs.x, obs.y, obs.z) <= obs.r * obs.r then
-                    hit = true
-                    break
-                end
-            end
+        if not hit and point_hits_obstacle(l.pos, obstacles) then
+            hit = true
         end
 
         if hit or l.life <= 0 then
@@ -401,6 +465,11 @@ function M.update(all_ships, boss_parts, dt)
                     end
                 end
             end
+        end
+
+        if not hit and point_hits_obstacle(m.pos, obstacles) then
+            pool_manager.spawn_vfx(m.pos, 1.0, 0.55, 0.2, 3.8, 0.25)
+            hit = true
         end
 
         if hit or m.life <= 0 then

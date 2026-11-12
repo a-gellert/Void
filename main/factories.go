@@ -28,3 +28,13 @@ embedded_components {
   type: "factory"
   data: "prototype: \"/entities/dreadnought/dreadnought.go\"\n"
 }
+embedded_components {
+  id: "dust"
+  type: "factory"
+  data: "prototype: \"/entities/dust/dust.go\"\n"
+}
+embedded_components {
+  id: "pickup"
+  type: "factory"
+  data: "prototype: \"/entities/pickup/pickup.go\"\n"
+}

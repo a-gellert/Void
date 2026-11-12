@@ -95,7 +95,7 @@ function generateFont() {
     "абвгдеёжзийклмнопрстуфхцчшщъыьэюя" +
     "ÁÀÂÃÉÊÍÓÔÕÚÇáàâãéêíóôõúç" +
     "ÇĞİÖŞÜçğıöşü" +
-    "°×%+-•→";
+    "°×%+-•→—";
 
   const seen = new Set(ascii);
   let chars = ascii.join("");
@@ -714,6 +714,42 @@ function generateSfx() {
   writeWav("assets/sfx/ui_click.wav", synth(0.04, (t, p) => {
     return Math.sin(2 * Math.PI * 880 * t) * (1 - p) * 0.25;
   }));
+  writeWav("assets/sfx/lock.wav", synth(0.08, (t, p) => {
+    const f = p < 0.45 ? 1080 : 1560;
+    const env = Math.sin(Math.PI * p) * (1 - p * 0.4);
+    return Math.sin(2 * Math.PI * f * t) * env * 0.28;
+  }));
+  // Seamless 8s space ambient pad (integer cycles over 8s for zero-click loop)
+  writeWav("assets/sfx/ambient.wav", synth(8.0, (t, p) => {
+    const w = 2 * Math.PI * p;
+    const lfo1 = 0.65 + 0.35 * Math.sin(w * 1);
+    const lfo2 = 0.60 + 0.40 * Math.cos(w * 2);
+    const lfo3 = 0.55 + 0.45 * Math.sin(w * 3 + 1.1);
+    const sub = Math.sin(w * 440) * 0.34;          // 55 Hz (A1)
+    const fifth = Math.sin(w * 660) * 0.24 * lfo1; // 82.5 Hz (E2)
+    const oct = Math.sin(w * 880) * 0.16 * lfo2;   // 110 Hz (A2)
+    const shimmer = Math.sin(w * 1320) * 0.10 * lfo3; // 165 Hz (E3)
+    const ninth = Math.sin(w * 1980) * 0.06 * (0.5 + 0.5 * Math.sin(w * 2 + 0.7)); // 247.5 Hz (B3)
+    return (sub + fifth + oct + shimmer + ninth) * 0.24;
+  }));
+  writeWav("assets/sfx/victory.wav", synth(0.85, (t, p) => {
+    const notes = [523.25, 659.25, 783.99, 1046.50]; // C5 E5 G5 C6
+    const idx = Math.min(3, Math.floor(p * 4));
+    const localP = (p * 4) - idx;
+    const freq = notes[idx];
+    const noteEnv = Math.sin(Math.min(1, localP * 6) * Math.PI * 0.5) * Math.pow(1 - p, 0.75);
+    const tone = Math.sin(2 * Math.PI * freq * t) * 0.65 + Math.sin(2 * Math.PI * freq * 1.5 * t) * 0.20;
+    const chord = Math.sin(2 * Math.PI * 523.25 * t) * 0.25 + Math.sin(2 * Math.PI * 783.99 * t) * 0.20;
+    return (tone + chord * p) * noteEnv * 0.38;
+  }));
+  writeWav("assets/sfx/defeat.wav", synth(0.85, (t, p) => {
+    const notes = [392.00, 349.23, 293.66, 220.00]; // G4 F4 D4 A3
+    const idx = Math.min(3, Math.floor(p * 4));
+    const freq = notes[idx];
+    const env = Math.sin(Math.min(1, p * 12) * Math.PI * 0.5) * Math.pow(1 - p, 1.15);
+    const tone = Math.sin(2 * Math.PI * freq * t) * 0.65 + Math.sin(2 * Math.PI * (freq * 0.5) * t) * 0.35;
+    return tone * env * 0.38;
+  }));
 }
 
 // ============================================================================
@@ -825,10 +861,29 @@ function generateUiAssets() {
     writePng("assets/ui/arrow_up.png", 32, 32, c.data);
   }
 
+  // Hit marker X-crosshair (64x64)
+  {
+    const c = makeCanvas(64, 64);
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const dx = Math.abs(x + 0.5 - 32);
+        const dy = Math.abs(y + 0.5 - 32);
+        const r = Math.hypot(dx, dy);
+        const diagDist = Math.abs(dx - dy) / Math.SQRT2;
+        if (r >= 9 && r <= 26 && diagDist <= 2.2) {
+          const edge = Math.min(1, 2.2 - diagDist + 0.5, r - 8.5, 26.5 - r);
+          c.set(x, y, 255, 255, 255, Math.max(0, Math.min(255, edge * 255)));
+        }
+      }
+    }
+    writePng("assets/ui/hit_marker.png", 64, 64, c.data);
+  }
+
   // Generate ui.atlas
   const images = [
     "white", "panel_rounded", "reticle", "lock_ring",
-    "lead_pip", "stick_base", "stick_knob", "btn_circle", "arrow_up"
+    "lead_pip", "stick_base", "stick_knob", "btn_circle", "arrow_up",
+    "hit_marker"
   ];
   const atlas = images.map(n => `images {\n  image: "/assets/ui/${n}.png"\n}`).join("\n") +
     "\nmargin: 2\nextrude_borders: 2\ninner_padding: 0\n";

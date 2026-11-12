@@ -8,11 +8,20 @@ local GUI_H = 1080
 
 local cam_pos = vmath.vector3(0, 8, 22)
 local cam_look = vmath.vector3(0, 0, -20)
+local cam_forward = vmath.vector3(0, 0, -1)
 local view_mtx = vmath.matrix4()
 local proj_mtx = vmath.matrix4()
 local current_fov = 65.0
 local shake_trauma = 0.0
 local hangar_angle = 0.4
+
+function M.get_pos()
+    return cam_pos
+end
+
+function M.get_forward()
+    return cam_forward
+end
 
 function M.add_shake(amount)
     shake_trauma = math.min(1.0, shake_trauma + amount)
@@ -23,6 +32,7 @@ function M.reset(pos, forward)
     local f = forward or vmath.vector3(0, 0, -1)
     cam_pos = p - f * 17.5 + UP * 4.2
     cam_look = p + f * 35.0
+    cam_forward = math3d.normalize_or_default(cam_look - cam_pos, f)
     current_fov = 65.0
     shake_trauma = 0.0
 end
@@ -46,6 +56,7 @@ function M.update_battle(ship, steer_x, steer_y, dt)
     cam_look.x = math3d.lerp(cam_look.x, desired_look.x, follow_t * 1.2)
     cam_look.y = math3d.lerp(cam_look.y, desired_look.y, follow_t * 1.2)
     cam_look.z = math3d.lerp(cam_look.z, desired_look.z, follow_t * 1.2)
+    cam_forward = math3d.normalize_or_default(cam_look - cam_pos, ship.forward)
 
     local final_pos = vmath.vector3(cam_pos.x, cam_pos.y, cam_pos.z)
     if shake_trauma > 0.001 then
@@ -60,7 +71,7 @@ function M.update_battle(ship, steer_x, steer_y, dt)
     view_mtx = vmath.matrix4_look_at(final_pos, cam_look, UP)
     proj_mtx = vmath.matrix4_perspective(math.rad(current_fov), aspect, 0.5, 1800)
 
-    msg.post("@render:", "set_view_projection", { view = view_mtx, projection = proj_mtx })
+    msg.post("@render:", "set_space_camera", { view = view_mtx, projection = proj_mtx })
 end
 
 function M.update_hangar(target_pos, dt)
@@ -74,7 +85,7 @@ function M.update_hangar(target_pos, dt)
 
     view_mtx = vmath.matrix4_look_at(vmath.vector3(cx, cy, cz), target_pos + vmath.vector3(0, -0.4, 0), UP)
     proj_mtx = vmath.matrix4_perspective(math.rad(55), aspect, 0.5, 1800)
-    msg.post("@render:", "set_view_projection", { view = view_mtx, projection = proj_mtx })
+    msg.post("@render:", "set_space_camera", { view = view_mtx, projection = proj_mtx })
 end
 
 function M.get_aim_ray(steer_x, steer_y)

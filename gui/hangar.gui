@@ -8,5 +8,5 @@ textures {
   texture: "/assets/atlases/ui.atlas"
 }
 material: "/builtins/materials/gui.material"
-adjust_reference: ADJUST_REFERENCE_DISABLED
+adjust_reference: ADJUST_REFERENCE_LEGACY
 max_nodes: 512

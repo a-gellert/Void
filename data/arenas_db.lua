@@ -26,6 +26,11 @@ M.STANDARD_ARENA = {
         { id = "B", x = -95, y = 0, z = 40, radius = 20 },
         { id = "C", x = 95, y = -40, z = -45, radius = 20 },
     },
+    pickups = {
+        { kind = "repair", x = 0, y = -34, z = 0, radius = 7.5, respawn = 18.0 },
+        { kind = "charge", x = 58, y = 14, z = -12, radius = 7.5, respawn = 18.0 },
+        { kind = "repair", x = -52, y = 18, z = -10, radius = 7.5, respawn = 18.0 },
+    },
     spawns = {
         team1 = {
             { -24, 6, 170 }, { 24, 6, 170 }, { -54, -8, 155 }, { 54, 10, 155 },
@@ -73,6 +78,10 @@ M.DREADNOUGHT_ARENA = {
         team1 = {
             { -28, 4, 165 }, { 28, 4, 165 }, { -65, 14, 150 }, { 65, -8, 150 },
         },
+    },
+    pickups = {
+        { kind = "repair", x = -55, y = 12, z = 35, radius = 7.5, respawn = 18.0 },
+        { kind = "charge", x = 55, y = 12, z = 35, radius = 7.5, respawn = 18.0 },
     },
 }
 

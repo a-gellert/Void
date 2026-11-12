@@ -1,6 +1,6 @@
 local MSG_CLEAR_COLOR = hash("clear_color")
 local MSG_WINDOW_RESIZED = hash("window_resized")
-local MSG_SET_VIEW_PROJ = hash("set_view_projection")
+local MSG_SET_VIEW_PROJ = hash("set_space_camera")
 
 local function create_clear_buffers()
     return {

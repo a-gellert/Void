@@ -8,14 +8,52 @@ local poki = require("modules.poki")
 
 local M_UPGRADE_KEYS = { "hull", "weapon", "shield", "engine" }
 
+local M_STAT_SPECS = {
+    { stat_key = "hull",   node_key = "hull",   field = "max_hull" },
+    { stat_key = "shield", node_key = "shield", field = "max_shield" },
+    { stat_key = "dps",    node_key = "weapon", field = "dps" },
+    { stat_key = "speed",  node_key = "engine", field = "speed" },
+}
+
+local function compute_node_deltas(cid, u)
+    local owned_stats = ships_db.get_effective_stats(cid, u)
+    local deltas = {}
+    for _, spec in ipairs(M_STAT_SPECS) do
+        local lv = u[spec.node_key] or 1
+        if lv < 5 then
+            local next_u = {
+                hull = u.hull,
+                weapon = u.weapon,
+                shield = u.shield,
+                engine = u.engine,
+            }
+            next_u[spec.node_key] = lv + 1
+            local next_stats = ships_db.get_effective_stats(cid, next_u)
+            deltas[spec.node_key] = math.floor(next_stats[spec.field] + 0.5) - math.floor(owned_stats[spec.field] + 0.5)
+        else
+            deltas[spec.node_key] = 0
+        end
+    end
+    return owned_stats, deltas
+end
+
 local function refresh_hangar(self)
     local s = progress.get()
     local cid = s.selected_class
     local u = s.upgrades[cid]
     local stats = ships_db.get_effective_stats(cid, progress.get_player_upgrades(cid))
+    local owned_stats, deltas = compute_node_deltas(cid, u)
+
+    if self.preview_cosmetic then
+        local pk = self.preview_cosmetic
+        local already = (pk.kind == "skin" and s.unlocked_skins[pk.id]) or (pk.kind == "trail" and s.unlocked_trails[pk.id])
+        if already then
+            self.preview_cosmetic = nil
+        end
+    end
 
     gui.set_text(self.txt_title, i18n.t("game_title"))
-    gui.set_text(self.txt_wallet, string.format("%s: %d   •   %s: %d", i18n.t("credits"), s.credits, i18n.t("parts"), s.parts))
+    gui.set_text(self.txt_wallet, string.format("%s: %d   •   %s: %d", i18n.t("credits"), s.credits, i18n.t("parts"), s.parts or 0))
     gui.set_text(self.lbl_lang, i18n.t("language") .. ": " .. string.upper(i18n.get_language()))
     gui.set_text(self.lbl_sound, i18n.t("sound") .. ": " .. i18n.t(audio.is_muted() and "off" or "on"))
 
@@ -30,18 +68,45 @@ local function refresh_hangar(self)
 
     gui.set_text(self.txt_ship_tier, string.format("%s  T%d", i18n.t("class_" .. cid), stats.tier))
 
+    -- Numeric Stats Card (Hull, Shield, DPS, Speed + upgrade gain)
+    for idx, spec in ipairs(M_STAT_SPECS) do
+        local cell = self.stat_cells[idx]
+        local cur_val = math.floor(stats[spec.field] + 0.5)
+        local own_val = math.floor(owned_stats[spec.field] + 0.5)
+        local delta = deltas[spec.node_key] or 0
+        local lv = u[spec.node_key] or 1
+        gui.set_text(cell.lbl_title, i18n.t(spec.stat_key))
+        gui.set_text(cell.lbl_val, tostring(cur_val))
+        gui.set_color(cell.lbl_val, (s.test_drive_active and cur_val > own_val) and ui.C_GOLD or ui.C_WHITE)
+        if lv >= 5 then
+            gui.set_text(cell.lbl_gain, i18n.t("max_lv"))
+            gui.set_color(cell.lbl_gain, ui.C_DIM)
+        else
+            gui.set_text(cell.lbl_gain, "+" .. tostring(delta))
+            gui.set_color(cell.lbl_gain, ui.C_GREEN)
+        end
+    end
+
     -- Upgrade rows
     for _, node_key in ipairs(M_UPGRADE_KEYS) do
         local row = self.upg_rows[node_key]
         local lv = u[node_key]
-        local can, cost = progress.can_upgrade(cid, node_key)
+        local can, credits_cost, parts_cost = progress.can_upgrade(cid, node_key)
+        local delta = deltas[node_key] or 0
         gui.set_text(row.lbl_name, string.format("%s  T%d/5", i18n.t(node_key), lv))
+        gui.set_text(row.lbl_delta, (lv < 5 and delta > 0) and ("+" .. tostring(delta)) or "")
         gui.set_scale(row.fill, vmath.vector3(lv / 5.0, 1, 1))
         if lv >= 5 then
             gui.set_text(row.lbl_btn, i18n.t("max_lv"))
+            gui.set_scale(row.lbl_btn, vmath.vector3(0.46, 0.46, 1))
             gui.set_color(row.btn_node, ui.C_CARD)
+        elseif parts_cost > 0 then
+            gui.set_text(row.lbl_btn, string.format("%d\n+%d %s", credits_cost, parts_cost, i18n.t("parts")))
+            gui.set_scale(row.lbl_btn, vmath.vector3(0.34, 0.34, 1))
+            gui.set_color(row.btn_node, can and ui.C_GREEN or ui.C_ELEV)
         else
-            gui.set_text(row.lbl_btn, tostring(cost))
+            gui.set_text(row.lbl_btn, tostring(credits_cost))
+            gui.set_scale(row.lbl_btn, vmath.vector3(0.50, 0.50, 1))
             gui.set_color(row.btn_node, can and ui.C_GREEN or ui.C_ELEV)
         end
     end
@@ -49,21 +114,49 @@ local function refresh_hangar(self)
     -- Skins & Trails
     gui.set_text(self.txt_skins_hdr, i18n.t("skins"))
     gui.set_text(self.txt_trails_hdr, i18n.t("trails"))
+    local pk = self.preview_cosmetic
     for i = 1, 24 do
         local sw = self.skin_swatches[i]
         local unlocked = s.unlocked_skins[i]
         local c = ships_db.SKINS[i].preview
-        local alpha = unlocked and 1.0 or 0.25
+        local is_preview = pk and pk.kind == "skin" and pk.id == i
+        local alpha = unlocked and 1.0 or (is_preview and 0.72 or 0.25)
         gui.set_color(sw.fill, vmath.vector4(c[1], c[2], c[3], alpha))
-        gui.set_color(sw.border, (s.equipped_skin == i) and ui.C_WHITE or ui.C_BG)
+        local border_col = (s.equipped_skin == i) and ui.C_WHITE or (is_preview and ui.C_AMBER or ui.C_BG)
+        gui.set_color(sw.border, border_col)
     end
     for i = 1, 12 do
         local sw = self.trail_swatches[i]
         local unlocked = s.unlocked_trails[i]
         local c = ships_db.TRAILS[i].color
-        local alpha = unlocked and 1.0 or 0.25
+        local is_preview = pk and pk.kind == "trail" and pk.id == i
+        local alpha = unlocked and 1.0 or (is_preview and 0.72 or 0.25)
         gui.set_color(sw.fill, vmath.vector4(c[1], c[2], c[3], alpha))
-        gui.set_color(sw.border, (s.equipped_trail == i) and ui.C_WHITE or ui.C_BG)
+        local border_col = (s.equipped_trail == i) and ui.C_WHITE or (is_preview and ui.C_AMBER or ui.C_BG)
+        gui.set_color(sw.border, border_col)
+    end
+
+    -- Parts Craft Buttons
+    local can_rand, rand_cost, has_locked = progress.can_craft_random()
+    if has_locked then
+        gui.set_text(self.lbl_craft_rand, string.format("%s\n%d %s", i18n.t("craft_random"), rand_cost, i18n.t("parts")))
+        gui.set_scale(self.lbl_craft_rand, vmath.vector3(0.34, 0.34, 1))
+        gui.set_color(self.node_craft_rand, can_rand and ui.C_AQUA or ui.C_ELEV)
+    else
+        gui.set_text(self.lbl_craft_rand, i18n.t("all_unlocked"))
+        gui.set_scale(self.lbl_craft_rand, vmath.vector3(0.36, 0.36, 1))
+        gui.set_color(self.node_craft_rand, ui.C_CARD)
+    end
+
+    if pk then
+        local can_sel, sel_cost = progress.can_craft_cosmetic(pk.kind, pk.id)
+        gui.set_text(self.lbl_craft_sel, string.format("%s\n%d %s", i18n.t("craft_selected"), sel_cost, i18n.t("parts")))
+        gui.set_scale(self.lbl_craft_sel, vmath.vector3(0.34, 0.34, 1))
+        gui.set_color(self.node_craft_sel, can_sel and ui.C_GREEN or ui.C_ELEV)
+    else
+        gui.set_text(self.lbl_craft_sel, has_locked and i18n.t("select_locked") or i18n.t("all_unlocked"))
+        gui.set_scale(self.lbl_craft_sel, vmath.vector3(0.35, 0.35, 1))
+        gui.set_color(self.node_craft_sel, ui.C_CARD)
     end
 
     gui.set_text(self.lbl_rand_skin, i18n.t("random_skin"))
@@ -74,7 +167,9 @@ local function refresh_hangar(self)
     local mode_hint = (next_num % 5 == 0) and i18n.t("mode_boss") or ((next_num % 2 == 0) and i18n.t("mode_dom") or i18n.t("mode_tdm"))
     gui.set_text(self.lbl_battle, i18n.t("battle") .. " • " .. mode_hint)
 
-    msg.post("/controller#main", "refresh_hangar_preview")
+    local preview_skin = (pk and pk.kind == "skin") and pk.id or s.equipped_skin
+    local preview_trail = (pk and pk.kind == "trail") and pk.id or s.equipped_trail
+    msg.post("/controller#main", "refresh_hangar_preview", { skin_id = preview_skin, trail_id = preview_trail })
 end
 
 local function build_hangar(self)
@@ -83,7 +178,7 @@ local function build_hangar(self)
     self.druid = druid.new(self)
 
     self.root = ui.box(nil, 0, 0, 0, 0, vmath.vector4(0, 0, 0, 0))
-    gui.set_visible(self.root, self.visible)
+    gui.set_enabled(self.root, self.visible)
 
     -- Top Bar
     local top = ui.box(self.root, 960, 1024, 1860, 82, ui.C_BG, "panel_rounded")
@@ -124,21 +219,33 @@ local function build_hangar(self)
         local y = -10 - (idx - 1) * 96
         local row_bg = ui.box(left, 0, y, 490, 82, ui.C_CARD, "panel_rounded")
         local lbl_name = ui.text(row_bg, -225, 18, "", 0.44, ui.C_WHITE, gui.PIVOT_W)
-        local bar_bg = ui.box(row_bg, -95, -16, 250, 14, ui.C_BG)
-        local fill = ui.box(bar_bg, -125, 0, 250, 14, ui.C_AQUA)
+        local lbl_delta = ui.text(row_bg, 72, 18, "", 0.38, ui.C_GREEN, gui.PIVOT_E)
+        local bar_bg = ui.box(row_bg, -113, -16, 224, 14, ui.C_BG)
+        local fill = ui.box(bar_bg, -112, 0, 224, 14, ui.C_AQUA)
         gui.set_pivot(fill, gui.PIVOT_W)
-        local _, btn_node, lbl_btn = ui.button(self.druid, row_bg, 165, 0, 130, 56, "150", ui.C_GREEN, "panel_rounded", function()
+        local _, btn_node, lbl_btn = ui.button(self.druid, row_bg, 158, 0, 150, 62, "150", ui.C_GREEN, "panel_rounded", function()
             if progress.upgrade_node(progress.get().selected_class, node_key) then
                 refresh_hangar(self)
             end
         end, 0.50)
-        self.upg_rows[node_key] = { lbl_name = lbl_name, fill = fill, btn_node = btn_node, lbl_btn = lbl_btn }
+        self.upg_rows[node_key] = { lbl_name = lbl_name, lbl_delta = lbl_delta, fill = fill, btn_node = btn_node, lbl_btn = lbl_btn }
     end
 
     -- Center Ship Tier Label above 3D Preview
     self.txt_ship_tier = ui.text(self.root, 960, 890, "", 0.72, ui.C_WHITE)
 
-    -- Right Panel: 24 Skins + 12 Trails
+    -- Center Numeric Stats Card (Hull, Shield, DPS, Speed + upgrade delta)
+    self.stats_panel = ui.box(self.root, 960, 224, 720, 96, ui.C_BG, "panel_rounded")
+    self.stat_cells = {}
+    for idx = 1, 4 do
+        local cx = -264 + (idx - 1) * 176
+        local lbl_title = ui.text(self.stats_panel, cx, 26, "", 0.36, ui.C_DIM)
+        local lbl_val = ui.text(self.stats_panel, cx, -1, "0", 0.56, ui.C_WHITE)
+        local lbl_gain = ui.text(self.stats_panel, cx, -28, "", 0.34, ui.C_GREEN)
+        self.stat_cells[idx] = { lbl_title = lbl_title, lbl_val = lbl_val, lbl_gain = lbl_gain }
+    end
+
+    -- Right Panel: 24 Skins + 12 Trails + Parts Crafting
     local right = ui.box(self.root, 1630, 560, 500, 770, ui.C_BG, "panel_rounded")
     self.txt_skins_hdr = ui.text(right, -220, 345, "SKINS", 0.52, ui.C_AQUA, gui.PIVOT_W)
     self.skin_swatches = {}
@@ -146,54 +253,86 @@ local function build_hangar(self)
         local col = (i - 1) % 6
         local row = math.floor((i - 1) / 6)
         local sx = -180 + col * 72
-        local sy = 285 - row * 68
-        local border = ui.box(right, sx, sy, 60, 56, ui.C_BG, "panel_rounded")
-        local fill = ui.box(border, 0, 0, 50, 46, ui.C_WHITE, "panel_rounded")
+        local sy = 285 - row * 66
+        local border = ui.box(right, sx, sy, 60, 54, ui.C_BG, "panel_rounded")
+        local fill = ui.box(border, 0, 0, 50, 44, ui.C_WHITE, "panel_rounded")
         self.druid:new_button(border, function()
             local s = progress.get()
+            audio.play("ui_click", 0.5)
             if s.unlocked_skins[i] then
-                audio.play("ui_click", 0.5)
+                self.preview_cosmetic = nil
                 s.equipped_skin = i
                 progress.save()
-                refresh_hangar(self)
+            else
+                self.preview_cosmetic = { kind = "skin", id = i }
             end
+            refresh_hangar(self)
         end)
         self.skin_swatches[i] = { border = border, fill = fill }
     end
 
-    self.txt_trails_hdr = ui.text(right, -220, 0, "TRAILS", 0.52, ui.C_AQUA, gui.PIVOT_W)
+    self.txt_trails_hdr = ui.text(right, -220, 16, "TRAILS", 0.52, ui.C_AQUA, gui.PIVOT_W)
     self.trail_swatches = {}
     for i = 1, 12 do
         local col = (i - 1) % 6
         local row = math.floor((i - 1) / 6)
         local sx = -180 + col * 72
-        local sy = -60 - row * 68
-        local border = ui.box(right, sx, sy, 60, 56, ui.C_BG, "panel_rounded")
-        local fill = ui.box(border, 0, 0, 50, 46, ui.C_WHITE, "panel_rounded")
+        local sy = -44 - row * 66
+        local border = ui.box(right, sx, sy, 60, 54, ui.C_BG, "panel_rounded")
+        local fill = ui.box(border, 0, 0, 50, 44, ui.C_WHITE, "panel_rounded")
         self.druid:new_button(border, function()
             local s = progress.get()
+            audio.play("ui_click", 0.5)
             if s.unlocked_trails[i] then
-                audio.play("ui_click", 0.5)
+                self.preview_cosmetic = nil
                 s.equipped_trail = i
                 progress.save()
-                refresh_hangar(self)
+            else
+                self.preview_cosmetic = { kind = "trail", id = i }
             end
+            refresh_hangar(self)
         end)
         self.trail_swatches[i] = { border = border, fill = fill }
     end
 
-    self.btn_rand_skin, _, self.lbl_rand_skin = ui.button(self.druid, right, 0, -255, 440, 74, "RANDOM SKIN (AD)", ui.C_CORAL, "panel_rounded", function()
+    self.btn_craft_rand, self.node_craft_rand, self.lbl_craft_rand = ui.button(
+        self.druid, right, -112, -202, 214, 64, "CRAFT RANDOM", ui.C_AQUA, "panel_rounded",
+        function()
+            local kind = progress.craft_random_cosmetic()
+            if kind then
+                self.preview_cosmetic = nil
+                audio.play("heal", 0.6)
+                refresh_hangar(self)
+            end
+        end, 0.34
+    )
+
+    self.btn_craft_sel, self.node_craft_sel, self.lbl_craft_sel = ui.button(
+        self.druid, right, 112, -202, 214, 64, "CRAFT", ui.C_ELEV, "panel_rounded",
+        function()
+            local pk = self.preview_cosmetic
+            if pk and progress.craft_cosmetic(pk.kind, pk.id) then
+                self.preview_cosmetic = nil
+                audio.play("heal", 0.6)
+                refresh_hangar(self)
+            end
+        end, 0.34
+    )
+
+    self.btn_rand_skin, _, self.lbl_rand_skin = ui.button(self.druid, right, 0, -290, 440, 66, "RANDOM SKIN (AD)", ui.C_CORAL, "panel_rounded", function()
         poki.rewarded_break(function(ok)
             if ok then
+                self.preview_cosmetic = nil
                 progress.unlock_random_cosmetic()
+                audio.play("heal", 0.6)
                 refresh_hangar(self)
             end
         end)
-    end, 0.46)
+    end, 0.44)
 
     -- Bottom Center/Right: Test Drive & Battle CTA
     self.btn_test_drive, self.node_test_drive, self.lbl_test_drive = ui.button(
-        self.druid, self.root, 960, 145, 420, 72, "TEST DRIVE +1 TIER", ui.C_AMBER, "panel_rounded",
+        self.druid, self.root, 960, 112, 420, 72, "TEST DRIVE +1 TIER", ui.C_AMBER, "panel_rounded",
         function()
             local s = progress.get()
             if not s.test_drive_active then
@@ -218,6 +357,7 @@ end
 function init(self)
     msg.post(".", "acquire_input_focus")
     self.visible = false
+    self.preview_cosmetic = nil
     build_hangar(self)
 end
 
@@ -238,8 +378,9 @@ end
 function on_message(self, message_id, message)
     if message_id == hash("set_visible") then
         self.visible = message.visible and true or false
-        gui.set_visible(self.root, self.visible)
+        gui.set_enabled(self.root, self.visible)
         if self.visible then
+            self.preview_cosmetic = nil
             refresh_hangar(self)
         end
     end

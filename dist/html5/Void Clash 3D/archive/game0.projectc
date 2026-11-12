@@ -115,7 +115,7 @@ max_count = 128
 subpixels = 1
 
 [model]
-max_count = 128
+max_count = 1024
 split_meshes = 0
 max_bone_matrix_texture_width = 1024
 max_bone_matrix_texture_height = 1024

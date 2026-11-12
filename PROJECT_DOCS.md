@@ -104,4 +104,35 @@
 ---
 
 ## 5. Журнал изменений (Changelog)
-- **2026-11-12 (Этап 0):** Инициализация структуры, создание `PROJECT_DOCS.md`, `main/game.appmanifest`, настройка зависимостей `Druid` + `defold-event` + `Poki SDK` в `game.project`, настройка `input/game.input_binding` и мультиязычного шрифта `Nunito-Black`.
+- **2026-11-12 (Этапы 0–6):**
+  - Инициализация `PROJECT_DOCS.md`, `main/game.appmanifest` (физика Box2D/Bullet3D вырезана, `gamesys_model` + `gamesys_rig` + `rig` сохранены), `game.project` (`Poki SDK`, `defold-event`, `druid 1.3.0`), `input/game.input_binding`.
+  - Генератор `tools/gen_assets.js`: `assets/fonts/main.font` (`en`, `pt`, `ru`, `tr`), `assets/textures/palette_256.png`, 21 low-poly `.gltf` модель (включая `star_dome.gltf` и обвесы T2–T5), 10 `.wav` SFX и `assets/atlases/ui.atlas`.
+  - 3D-рендер `render/space.render_script` + материалы `space_palette.material` (сдвиг UV для 24 скинов + `tint` Hit Flash) и `space_emissive.material`.
+  - Базы `data/` (`ships_db`, `modules_db`, `arenas_db`, `bots_db`) и чистые Lua-модули (`math3d`, `pool_manager`, `flight_physics`, `combat_manager`, `ai_controller`, `camera_rig`, `match_controller`, `progress`, `i18n`, `audio`, `poki`).
+  - Интерфейс Druid (`gui/hud_combat.gui`, `gui/hangar.gui`, `gui/ui_helper.lua`) и точка входа `main/main.collection` / `main/main.script`.
+  - Проверена сборка `bob --platform=wasm-web --archive build bundle`: `VoidClash3D.wasm` ~1.98 МБ, `game0.arcd` ~403 КБ.
+- **2026-11-12 (Task 2 — Читаемость боя):**
+  - Добавлен `assets/sfx/lock.wav` (`main/audio.go`, `modules/audio.lua`) и проигрывание при смене `locked_target` в `modules/combat_manager.lua`.
+  - Добавлен спрайт `assets/ui/hit_marker.png` в `assets/atlases/ui.atlas` (`tools/gen_assets.js`), событие попадания `on_hit_callback` и состояние хит-маркера / `+1 KILL` / 4-строчного килл-фида без аллокаций в `modules/match_controller.lua`.
+  - В `gui/hud_combat.gui_script` добавлены хит-маркер на прицеле, всплывающий баннер `+1 KILL`, килл-фид (`Кто → Кого`) и до 7 компактных 2D-маркеров (HP/щит + цвет команды) над видимыми кораблями и уязвимыми частями Дредноута.
+  - В `modules/i18n.lua` добавлены ключи `kill_plus`, `dreadnought`, `part_generator`, `part_turret`, `part_reactor` (`en`, `pt`, `ru`, `tr`).
+- **2026-11-12 (Task 4 — Босс-рейд Дредноут и тактический ИИ):**
+  - В `entities/dreadnought/dreadnought.go` и `modules/pool_manager.lua` добавлен полупрозрачный энергокупол `dome` (`vfx_sphere.gltf` + `space_emissive.material`), активный вокруг Дредноута в Фазе 1 (пока живы генераторы щита) с реакцией на попадания по щиту и эффектом коллапса при переходе в Фазу 2.
+  - В `modules/match_controller.lua` и `modules/combat_manager.lua` добавлены телеграфируемые ракетные залпы турелей Дредноута (`fire_turret_salvo`, `has_incoming_missile`), исключена блокировка лазеров сферой отталкивания корпуса (`is_boss_hull`) для надежного попадания по реактору/генераторам.
+  - В `gui/hud_combat.gui_script` и `modules/i18n.lua` добавлен пульсирующий баннер предупреждения о ракетном залпе (`missile_warning`) и подсветка кнопки `Dash`.
+  - В `modules/ai_controller.lua` добавлено реактивное уклонение ботов (`activate_dash` + боковой маневр) при захвате ракетами, телеграфе залпа босса или плотном обстреле.
+- **2026-11-12 (Task 3 — Ощущение 3D-скорости, полый астероид и сферы подбора):**
+  - В `assets/materials/space_emissive.material` / `.vp` добавлена вершинная константа `stretch`, а в `modules/pool_manager.lua` (`set_ship_trail_dash`) — растяжение `#trail` и усиление яркости при `dash_timer > 0`.
+  - Добавлен пул из 32 частиц 3D-пыли (`entities/dust/dust.go`, `/factories#dust`), оборачивающихся вокруг камеры (`camera_rig.get_pos` / `get_forward`) с растяжением в полосы скорости при форсаже.
+  - В `modules/flight_physics.lua` (`torus_closest_offset`), `modules/match_controller.lua`, `modules/combat_manager.lua` и `modules/ai_controller.lua` реализована тороидальная коллизия стенок `hollow_asteroid` со свободным пролетом и стрельбой сквозь центральный тоннель.
+  - На аренах (`data/arenas_db.lua`) размещены 2–3 сферы подбора (`entities/pickup/pickup.go`, `/factories#pickup`): `repair` (+40% корпуса) и `charge` (100% щита и сброс КД форсажа/модулей) с респавном 18 с, 2D-маркерами и локализованным уведомлением в `gui/hud_combat.gui_script` (`modules/i18n.lua`).
+- **2026-11-12 (Task 5 — Экономика Деталей, числовые ТТХ в Ангаре и звуковой эмбиент):**
+  - В `data/ships_db.lua` и `modules/progress.lua` задействованы детали (`parts`): требование деталей (`3 / 6 / 10`) на апгрейдах T3–T5 (`can_upgrade` / `upgrade_node`), а также крафт случайного (`craft_random_cosmetic`, 2 детали) или выбранного (`craft_cosmetic`, 4 детали за скин / 3 за шлейф) элемента кастомизации; в `get_effective_stats` добавлено поле `dps`.
+  - В `gui/hangar.gui_script` и `main/main.script` добавлены карточка числовых ТТХ (`Hull`, `Shield`, `DPS`, `Speed`) с отображением прироста следующего апгрейда, отображение стоимости в деталях на кнопках T3–T5, предпросмотр закрытых скинов/шлейфов и кнопки крафта за детали (`modules/i18n.lua`: `dps`, `speed`, `craft_random`, `craft_selected`, `select_locked`, `all_unlocked`).
+  - В `tools/gen_assets.js`, `main/audio.go`, `modules/audio.lua`, `main/main.script` и `modules/match_controller.lua` добавлены зацикленный космический эмбиент (`ambient.wav`) и звуки завершения боя (`victory.wav`, `defeat.wav`) с поддержкой `set_ad_paused` (`sound.pause` + `master` gain) и удален дубликат `lock` в `main/audio.go`.
+- **2026-11-12 (Task 6 — E2E WASM-бандл и проверка в браузере):**
+  - `game.project`: добавлен `[model] max_count = 1024` (лимит по умолчанию `128` переполнялся пулами снарядов/VFX/астероидов).
+  - Симуляция `match_controller.update(...)` перенесена из `.gui_script` в `main/main.script` (`match_controller.get_input_state()`), а переходы из `gui/hud_combat.gui_script` (`btn_pause_hangar`, `btn_next`) маршрутизируются через `msg.post("/controller#main", ...)` без прямых вызовов `go.*` из `.gui_script`.
+  - В `gui/hud_combat.gui_script` и `gui/hangar.gui_script` переключение `self.root` переведено с `gui.set_visible` на `gui.set_enabled` (каскадное скрытие и отключение ввода дочерних нод Ангара/HUD).
+  - В `modules/camera_rig.lua` и `render/space.render_script` пользовательское сообщение проекции переименовано в `"set_space_camera"` (избежание системной валидации `id` встроенного `"set_view_projection"` в Defold 1.14).
+  - Финальный HTML5 WASM-бандл (`dist/html5/Void Clash 3D`): **5.24 МБ** raw / **2.42 МБ** gzip (цель ≤ 5–8 МБ выполнена с запасом); E2E-прогон в headless Edge (Combat → Pause → Hangar → Battle) завершился с `0` ошибками Lua/JS/404 и подтверждённым рендером 3D и 2D GUI.

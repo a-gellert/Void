@@ -1,10 +1,20 @@
 local ships_db = require("data.ships_db")
+local math3d = require("modules.math3d")
 
 local M = {}
 
 local HIDE_POS = vmath.vector3(0, -5000, 0)
 local ZERO_VEC4 = vmath.vector4(0, 0, 0, 0)
 local ONE_VEC4 = vmath.vector4(1, 1, 1, 1)
+local TRAIL_NORMAL_STRETCH = vmath.vector4(1, 1, 1, 0)
+local stretch_vec = vmath.vector4(1, 1, 1, 0)
+local trail_tint_vec = vmath.vector4(1, 1, 1, 0.85)
+local dust_scale = vmath.vector3(0.24, 0.24, 0.16)
+local dust_tint = vmath.vector4(0.72, 0.88, 1.0, 0.42)
+local dust_rot = vmath.quat()
+local pickup_scale = vmath.vector3(1, 1, 1)
+local pickup_tint = vmath.vector4(1, 1, 1, 1)
+local last_dust_alpha = -1
 
 local pools = {
     ships = {},
@@ -14,6 +24,8 @@ local pools = {
     asteroids = {},
     beacons = {},
     dreadnought = {},
+    dust = {},
+    pickups = {},
 }
 
 local function set_comp_enabled(id, comp, enabled)
@@ -127,12 +139,39 @@ function M.init()
                 gen = msg.url(nil, id, "gen"),
                 turret = msg.url(nil, id, "turret"),
                 reactor = msg.url(nil, id, "reactor"),
+                dome = msg.url(nil, id, "dome"),
             },
         }
         for _, u in pairs(entry.urls) do
             msg.post(u, "disable")
         end
         pools.dreadnought[i] = entry
+    end
+
+    -- 32 3D Speed Dust particles around camera
+    for i = 1, 32 do
+        local id = factory.create("/factories#dust", HIDE_POS)
+        local url = msg.url(nil, id, "speck")
+        msg.post(url, "disable")
+        pools.dust[i] = {
+            id = id,
+            url = url,
+            pos = vmath.vector3(0, -5000, 0),
+        }
+    end
+
+    -- 3 Arena Pickup Spheres
+    for i = 1, 3 do
+        local id = factory.create("/factories#pickup", HIDE_POS)
+        local entry = {
+            id = id,
+            core = msg.url(nil, id, "core"),
+            aura = msg.url(nil, id, "aura"),
+            r = 0.28, g = 0.95, b = 0.55,
+        }
+        msg.post(entry.core, "disable")
+        msg.post(entry.aura, "disable")
+        pools.pickups[i] = entry
     end
 end
 
@@ -164,8 +203,30 @@ function M.configure_ship_visual(slot, class_id, tier, skin_id, trail_id, visibl
             go.set(u[k], "tint", ONE_VEC4)
         end
         local trail = ships_db.TRAILS[trail_id] or ships_db.TRAILS[1]
+        slot.trail_color = { trail.color[1], trail.color[2], trail.color[3] }
+        slot.last_dash_factor = 0
         go.set(u.trail, "tint", vmath.vector4(trail.color[1], trail.color[2], trail.color[3], 0.85))
+        go.set(u.trail, "stretch", TRAIL_NORMAL_STRETCH)
     end
+end
+
+function M.set_ship_trail_dash(slot, dash_factor)
+    if not slot then return end
+    local df = math3d.clamp(dash_factor or 0, 0, 1)
+    if math.abs(df - (slot.last_dash_factor or 0)) < 0.005 then return end
+    slot.last_dash_factor = df
+    local z_scale = 1.0 + 1.8 * df
+    local xy_scale = 1.0 + 0.4 * df
+    local z_offset = 2.25 * (z_scale - 1.0)
+    stretch_vec.x, stretch_vec.y, stretch_vec.z, stretch_vec.w = xy_scale, xy_scale, z_scale, z_offset
+    go.set(slot.urls.trail, "stretch", stretch_vec)
+    local c = slot.trail_color or { 1, 1, 1 }
+    local boost = 1.0 + 0.45 * df
+    trail_tint_vec.x = c[1] * boost
+    trail_tint_vec.y = c[2] * boost
+    trail_tint_vec.z = c[3] * boost
+    trail_tint_vec.w = 0.85 + 0.15 * df
+    go.set(slot.urls.trail, "tint", trail_tint_vec)
 end
 
 function M.set_ship_hit_flash(slot, flash_amount)
@@ -259,12 +320,158 @@ end
 function M.get_asteroid_slot(i) return pools.asteroids[i] end
 function M.get_beacon_slot(i) return pools.beacons[i] end
 function M.get_dreadnought_slot(i) return pools.dreadnought[i] end
+function M.get_pickup_slot(i) return pools.pickups[i] end
+
+function M.configure_pickup_visual(slot, kind, active)
+    if not slot then return end
+    msg.post(slot.core, active and "enable" or "disable")
+    msg.post(slot.aura, active and "enable" or "disable")
+    if active then
+        if kind == "repair" then
+            slot.r, slot.g, slot.b = 0.28, 0.95, 0.55
+        else
+            slot.r, slot.g, slot.b = 0.15, 0.88, 1.0
+        end
+        pickup_tint.x, pickup_tint.y, pickup_tint.z, pickup_tint.w = slot.r, slot.g, slot.b, 0.95
+        go.set(slot.core, "tint", pickup_tint)
+        pickup_tint.w = 0.22
+        go.set(slot.aura, "tint", pickup_tint)
+    else
+        go.set_position(HIDE_POS, slot.id)
+    end
+end
+
+function M.update_pickup_visual(slot, pulse)
+    if not slot then return end
+    local sc = 0.92 + 0.14 * pulse
+    pickup_scale.x, pickup_scale.y, pickup_scale.z = sc, sc, sc
+    go.set_scale(pickup_scale, slot.id)
+    pickup_tint.x, pickup_tint.y, pickup_tint.z, pickup_tint.w = slot.r, slot.g, slot.b, 0.16 + 0.12 * pulse
+    go.set(slot.aura, "tint", pickup_tint)
+end
+
+local function compute_dust_basis(cam_fwd)
+    local fx, fy, fz = cam_fwd.x, cam_fwd.y, cam_fwd.z
+    local len_sq = fx * fx + fy * fy + fz * fz
+    if len_sq < 1e-8 then
+        fx, fy, fz = 0, 0, -1
+    else
+        local inv = 1.0 / math.sqrt(len_sq)
+        fx, fy, fz = fx * inv, fy * inv, fz * inv
+    end
+    -- Clamp pitch for stable horizon basis
+    if fy > 0.94 or fy < -0.94 then
+        fy = math3d.clamp(fy, -0.94, 0.94)
+        local inv = 1.0 / math.sqrt(fx * fx + fy * fy + fz * fz)
+        fx, fy, fz = fx * inv, fy * inv, fz * inv
+    end
+    local zx, zy, zz = -fx, -fy, -fz
+    local xz_sq = fx * fx + fz * fz
+    local xx, xy, xz = 1, 0, 0
+    if xz_sq > 1e-8 then
+        local inv_x = 1.0 / math.sqrt(xz_sq)
+        xx, xz = -fz * inv_x, fx * inv_x
+    end
+    local yx = zy * xz
+    local yy = zz * xx - zx * xz
+    local yz = -zy * xx
+
+    local trace = xx + yy + zz
+    if trace > 0 then
+        local s = math.sqrt(trace + 1.0) * 2.0
+        dust_rot.w = 0.25 * s
+        dust_rot.x = (yz - zy) / s
+        dust_rot.y = (zx - xz) / s
+        dust_rot.z = (xy - yx) / s
+    elseif xx > yy and xx > zz then
+        local s = math.sqrt(1.0 + xx - yy - zz) * 2.0
+        dust_rot.w = (yz - zy) / s
+        dust_rot.x = 0.25 * s
+        dust_rot.y = (yx + xy) / s
+        dust_rot.z = (zx + xz) / s
+    elseif yy > zz then
+        local s = math.sqrt(1.0 + yy - xx - zz) * 2.0
+        dust_rot.w = (zx - xz) / s
+        dust_rot.x = (yx + xy) / s
+        dust_rot.y = 0.25 * s
+        dust_rot.z = (zy + yz) / s
+    else
+        local s = math.sqrt(1.0 + zz - xx - yy) * 2.0
+        dust_rot.w = (xy - yx) / s
+        dust_rot.x = (zx + xz) / s
+        dust_rot.y = (zy + yz) / s
+        dust_rot.z = 0.25 * s
+    end
+    -- Right is -x_axis (since fwd = -z_axis), Up is y_axis
+    return fx, fy, fz, -xx, -xy, -xz, yx, yy, yz
+end
+
+local function respawn_dust_speck(d, cam_pos, fx, fy, fz, rx, ry, rz, ux, uy, uz, min_along, max_along)
+    local along = min_along + math.random() * (max_along - min_along)
+    local rad = 6.0 + math.random() * 36.0
+    local ang = math.random() * math.pi * 2.0
+    local ox = math.cos(ang) * rad
+    local oy = math.sin(ang) * rad
+    d.pos.x = cam_pos.x + fx * along + rx * ox + ux * oy
+    d.pos.y = cam_pos.y + fy * along + ry * ox + uy * oy
+    d.pos.z = cam_pos.z + fz * along + rz * ox + uz * oy
+    go.set_position(d.pos, d.id)
+end
+
+function M.init_dust(cam_pos, cam_fwd)
+    local fx, fy, fz, rx, ry, rz, ux, uy, uz = compute_dust_basis(cam_fwd)
+    dust_tint.w = 0.42
+    last_dust_alpha = 0.42
+    dust_scale.x, dust_scale.y, dust_scale.z = 0.24, 0.24, 0.16
+    for i = 1, #pools.dust do
+        local d = pools.dust[i]
+        msg.post(d.url, "enable")
+        go.set(d.url, "tint", dust_tint)
+        go.set_rotation(dust_rot, d.id)
+        go.set_scale(dust_scale, d.id)
+        respawn_dust_speck(d, cam_pos, fx, fy, fz, rx, ry, rz, ux, uy, uz, 2.0, 72.0)
+    end
+end
+
+function M.update_dust(cam_pos, cam_fwd, speed_ratio, dash_factor)
+    local fx, fy, fz, rx, ry, rz, ux, uy, uz = compute_dust_basis(cam_fwd)
+    local df = math3d.clamp(dash_factor or 0, 0, 1)
+    local sr = math3d.clamp(speed_ratio or 0, 0, 1)
+    dust_scale.x = 0.24 - 0.05 * df
+    dust_scale.y = dust_scale.x
+    dust_scale.z = 0.14 + 0.16 * sr + 1.15 * df
+    local alpha = 0.36 + 0.44 * df
+    local update_tint = math.abs(alpha - last_dust_alpha) > 0.02
+    if update_tint then
+        dust_tint.w = alpha
+        last_dust_alpha = alpha
+    end
+    for i = 1, #pools.dust do
+        local d = pools.dust[i]
+        local dx = d.pos.x - cam_pos.x
+        local dy = d.pos.y - cam_pos.y
+        local dz = d.pos.z - cam_pos.z
+        local along = dx * fx + dy * fy + dz * fz
+        local dist_sq = dx * dx + dy * dy + dz * dz
+        local lat_sq = dist_sq - along * along
+        if along < -4.0 or along > 74.0 or lat_sq > 52.0 * 52.0 then
+            respawn_dust_speck(d, cam_pos, fx, fy, fz, rx, ry, rz, ux, uy, uz, 44.0, 72.0)
+        end
+        go.set_rotation(dust_rot, d.id)
+        go.set_scale(dust_scale, d.id)
+        if update_tint then
+            go.set(d.url, "tint", dust_tint)
+        end
+    end
+end
 
 function M.hide_environment()
+    local id_rot = vmath.quat()
     for i = 1, #pools.asteroids do
         local a = pools.asteroids[i]
         for _, u in pairs(a.urls) do msg.post(u, "disable") end
         go.set_position(HIDE_POS, a.id)
+        go.set_rotation(id_rot, a.id)
     end
     for i = 1, #pools.beacons do
         local b = pools.beacons[i]
@@ -276,6 +483,13 @@ function M.hide_environment()
         local d = pools.dreadnought[i]
         for _, u in pairs(d.urls) do msg.post(u, "disable") end
         go.set_position(HIDE_POS, d.id)
+        go.set_rotation(id_rot, d.id)
+    end
+    for i = 1, #pools.pickups do
+        local pk = pools.pickups[i]
+        msg.post(pk.core, "disable")
+        msg.post(pk.aura, "disable")
+        go.set_position(HIDE_POS, pk.id)
     end
 end
 
@@ -294,6 +508,10 @@ function M.hide_all()
         pools.vfx[i].active = false
         msg.post(pools.vfx[i].url, "disable")
         go.set_position(HIDE_POS, pools.vfx[i].id)
+    end
+    for i = 1, #pools.dust do
+        msg.post(pools.dust[i].url, "disable")
+        go.set_position(HIDE_POS, pools.dust[i].id)
     end
     M.hide_environment()
 end

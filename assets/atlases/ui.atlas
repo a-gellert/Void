@@ -25,6 +25,9 @@ images {
 images {
   image: "/assets/ui/arrow_up.png"
 }
+images {
+  image: "/assets/ui/hit_marker.png"
+}
 margin: 2
 extrude_borders: 2
 inner_padding: 0

@@ -48,3 +48,23 @@ embedded_components {
   type: "sound"
   data: "sound: \"/assets/sfx/ui_click.wav\"\n"
 }
+embedded_components {
+  id: "lock"
+  type: "sound"
+  data: "sound: \"/assets/sfx/lock.wav\"\n"
+}
+embedded_components {
+  id: "ambient"
+  type: "sound"
+  data: "sound: \"/assets/sfx/ambient.wav\"\nlooping: 1\ngain: 0.25\n"
+}
+embedded_components {
+  id: "victory"
+  type: "sound"
+  data: "sound: \"/assets/sfx/victory.wav\"\n"
+}
+embedded_components {
+  id: "defeat"
+  type: "sound"
+  data: "sound: \"/assets/sfx/defeat.wav\"\n"
+}
