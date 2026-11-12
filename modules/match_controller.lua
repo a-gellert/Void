@@ -886,7 +886,7 @@ function M.update(input_state, dt)
     -- Player Flight, Lock-On, Auto-Fire & Actions
     local p = match.player
     if p and p.alive then
-        local aim_dir = camera_rig.get_aim_ray(input_state.steer_x, input_state.steer_y)
+        local aim_dir = camera_rig.get_aim_ray(p.pos, p.forward, input_state.steer_x, input_state.steer_y)
         flight_physics.update_ship(p, aim_dir, dt)
         camera_rig.update_battle(p, input_state.steer_x, input_state.steer_y, dt)
 

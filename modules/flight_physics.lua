@@ -72,8 +72,7 @@ function M.update_ship(ship, aim_dir, dt)
     -- Clamp vertical pitch component to +/- 70 degrees so auto-horizon never flips upside down
     local max_pitch_y = 0.92
     if target_dir.y > max_pitch_y or target_dir.y < -max_pitch_y then
-        target_dir.y = math3d.clamp(target_dir.y, -max_pitch_y, max_pitch_y)
-        target_dir = math3d.normalize_or_default(target_dir)
+        target_dir = math3d.clamp_pitch(target_dir, max_pitch_y, ship.forward)
     end
 
     -- Compute lateral turn delta for crisp banking roll
@@ -83,14 +82,13 @@ function M.update_ship(ship, aim_dir, dt)
     local target_roll = math3d.clamp(-lateral * 1.15, -0.78, 0.78)
     ship.roll = math3d.lerp(ship.roll or 0, target_roll, math.min(1.0, dt * 7.5))
 
-    -- Smoothly turn ship forward vector
+    -- Smoothly turn ship forward vector along the shortest arc (slerp-like),
+    -- then enforce the pitch limit on the result as well: component-wise lerp
+    -- near the pole could amplify |y| past the target limit, let the nose reach
+    -- vertical and make the orientation basis flip/spin.
     local turn_alpha = math.min(1.0, ship.turn_rate * dt)
-    local new_fwd = vmath.vector3(
-        math3d.lerp(ship.forward.x, target_dir.x, turn_alpha),
-        math3d.lerp(ship.forward.y, target_dir.y, turn_alpha),
-        math3d.lerp(ship.forward.z, target_dir.z, turn_alpha)
-    )
-    ship.forward = math3d.normalize_or_default(new_fwd, ship.forward)
+    ship.forward = math3d.rotate_towards(ship.forward, target_dir, turn_alpha)
+    ship.forward = math3d.clamp_pitch(ship.forward, max_pitch_y, ship.forward)
 
     -- Compute speed (dash / microwarp / base)
     local spd = ship.speed
@@ -118,16 +116,52 @@ function M.update_ship(ship, aim_dir, dt)
         end
     end
 
-    -- Soft spherical arena boundary
+    -- Soft spherical arena boundary. Start turning the nose back inside a bit
+    -- before the hard shell, otherwise a ship with neutral steering slides
+    -- along it and ends up circling the arena forever.
     local max_r = arenas_db.ARENA_RADIUS
+    local soft_r = max_r * 0.90
     local pos_sq = ship.pos.x * ship.pos.x + ship.pos.y * ship.pos.y + ship.pos.z * ship.pos.z
-    if pos_sq > max_r * max_r then
+    if pos_sq > soft_r * soft_r then
         local d = math.sqrt(pos_sq)
-        local scale = max_r / d
-        ship.pos.x = ship.pos.x * scale
-        ship.pos.y = ship.pos.y * scale
-        ship.pos.z = ship.pos.z * scale
+        local inv = 1.0 / d
+        local nx, ny, nz = ship.pos.x * inv, ship.pos.y * inv, ship.pos.z * inv
+        local t = math3d.clamp((d - soft_r) / (max_r - soft_r), 0.0, 1.0)
+        local pull = 4.0 * t
+        ship.forward = math3d.rotate_towards(
+            ship.forward,
+            math3d.normalize_or_default(vmath.vector3(
+                ship.forward.x - nx * pull,
+                ship.forward.y - ny * pull,
+                ship.forward.z - nz * pull
+            ), ship.forward),
+            math.min(1.0, dt * 14.0)
+        )
+
+        if d > max_r then
+            local scale = max_r * inv
+            ship.pos.x = ship.pos.x * scale
+            ship.pos.y = ship.pos.y * scale
+            ship.pos.z = ship.pos.z * scale
+            -- Hard fallback: never keep the nose pointing outside the shell.
+            local dot_n = ship.forward.x * nx + ship.forward.y * ny + ship.forward.z * nz
+            if dot_n > 0 then
+                local tx = ship.forward.x - nx * dot_n
+                local ty = ship.forward.y - ny * dot_n
+                local tz = ship.forward.z - nz * dot_n
+                local t_sq = tx * tx + ty * ty + tz * tz
+                if t_sq > 1e-6 then
+                    ship.forward = math3d.normalize_or_default(vmath.vector3(tx, ty, tz), ship.forward)
+                else
+                    ship.forward = vmath.vector3(-nx, -ny, -nz)
+                end
+            end
+        end
     end
+
+    -- Repulsion or the boundary turn may have nudged the pitch; keep the
+    -- auto-horizon basis away from the pole.
+    ship.forward = math3d.clamp_pitch(ship.forward, max_pitch_y, ship.forward)
 
     ship.rot = math3d.quat_from_forward(ship.forward, ship.roll)
 end

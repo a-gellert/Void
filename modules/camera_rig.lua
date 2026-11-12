@@ -88,12 +88,26 @@ function M.update_hangar(target_pos, dt)
     msg.post("@render:", "set_space_camera", { view = view_mtx, projection = proj_mtx })
 end
 
-function M.get_aim_ray(steer_x, steer_y)
-    -- Convert normalized screen cursor (-1..1) into a world forward direction
-    local fwd = math3d.normalize_or_default(cam_look - cam_pos)
-    local right = math3d.normalize_or_default(vmath.cross(fwd, UP), vmath.vector3(1, 0, 0))
-    local up = vmath.cross(right, fwd)
-    return math3d.normalize_or_default(fwd + right * (steer_x * 0.55) + up * (steer_y * 0.42))
+function M.get_aim_ray(ship_pos, ship_forward, steer_x, steer_y)
+    -- Aim at the world point under the cursor and steer the ship towards it.
+    -- The chase camera sits above/behind the ship, so taking its view direction
+    -- directly added a permanent nose-down offset: with the cursor centred the
+    -- ship slowly rotated into a dive/circle instead of flying straight. Aiming
+    -- from the ship to the point the camera looks at cancels that parallax.
+    local view = math3d.normalize_or_default(cam_look - cam_pos, ship_forward)
+    local right = math3d.normalize_or_default(vmath.cross(view, UP), vmath.vector3(1, 0, 0))
+    local up = vmath.cross(right, view)
+    local cursor_dir = math3d.normalize_or_default(
+        view + right * (steer_x * 0.55) + up * (steer_y * 0.42), view)
+
+    local dx = cam_look.x - cam_pos.x
+    local dy = cam_look.y - cam_pos.y
+    local dz = cam_look.z - cam_pos.z
+    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+    local tx = cam_pos.x + cursor_dir.x * dist - ship_pos.x
+    local ty = cam_pos.y + cursor_dir.y * dist - ship_pos.y
+    local tz = cam_pos.z + cursor_dir.z * dist - ship_pos.z
+    return math3d.normalize_or_default(vmath.vector3(tx, ty, tz), ship_forward)
 end
 
 -- Project 3D world point to virtual GUI space (1920x1080)

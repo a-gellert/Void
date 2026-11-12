@@ -35,16 +35,84 @@ function M.normalize_or_default(v, fallback)
     return vmath.vector3(v.x * inv, v.y * inv, v.z * inv)
 end
 
+-- Rotate `current` towards `target` by a fraction (0..1) of the angle between
+-- them along the shortest arc. Unlike component-wise lerp + normalize this
+-- cannot creep through the pole (which made the auto-horizon basis flip and
+-- the ship appear to spin around its own axis) and it handles a 180-degree
+-- turn instead of stalling.
+function M.rotate_towards(current, target, fraction)
+    local c = M.normalize_or_default(current)
+    local t = M.normalize_or_default(target, c)
+    local d = M.clamp(c.x * t.x + c.y * t.y + c.z * t.z, -1.0, 1.0)
+    if d > 0.999999 then
+        return t
+    end
+    local ax, ay, az
+    if d < -0.999999 then
+        -- Opposite directions: any perpendicular axis gives a valid arc.
+        if math.abs(c.y) < 0.9 then
+            ax, ay, az = -c.z, 0.0, c.x
+        else
+            ax, ay, az = 0.0, c.z, -c.y
+        end
+    else
+        ax = c.y * t.z - c.z * t.y
+        ay = c.z * t.x - c.x * t.z
+        az = c.x * t.y - c.y * t.x
+    end
+    local al = math.sqrt(ax * ax + ay * ay + az * az)
+    if al < 1e-6 then
+        return c
+    end
+    local inv = 1.0 / al
+    ax, ay, az = ax * inv, ay * inv, az * inv
+    local angle = math.acos(d) * M.clamp(fraction, 0.0, 1.0)
+    local cs, sn = math.cos(angle), math.sin(angle)
+    -- Rodrigues rotation of c around the axis (axis is perpendicular to c).
+    local kx = ay * c.z - az * c.y
+    local ky = az * c.x - ax * c.z
+    local kz = ax * c.y - ay * c.x
+    return M.normalize_or_default(vmath.vector3(
+        c.x * cs + kx * sn,
+        c.y * cs + ky * sn,
+        c.z * cs + kz * sn
+    ), c)
+end
+
+-- Clamp a direction's vertical component to +/- max_y while preserving its
+-- horizontal heading and unit length. A plain clamp followed by normalize does
+-- not work: for an almost vertical vector normalization scales the clamped Y
+-- component straight back above the limit, which lets the ship pass through the
+-- pole and makes the auto-horizon basis flip (the ship appears to spin/flip).
+function M.clamp_pitch(dir, max_y, fallback)
+    local mx = max_y or 0.92
+    local y = M.clamp(dir.y, -mx, mx)
+    local h_sq = dir.x * dir.x + dir.z * dir.z
+    local h
+    if h_sq < 1e-10 then
+        -- Vertical input: keep a stable heading from the fallback direction.
+        local fb = fallback
+        local fx, fz = 0, -1
+        if fb then
+            fx, fz = fb.x, fb.z
+        end
+        local fl = math.sqrt(fx * fx + fz * fz)
+        if fl < 1e-6 then
+            fx, fz, fl = 0, -1, 1
+        end
+        h = math.sqrt(math.max(0, 1 - y * y))
+        return vmath.vector3((fx / fl) * h, y, (fz / fl) * h)
+    end
+    h = math.sqrt(math.max(0, 1 - y * y) / h_sq)
+    return vmath.vector3(dir.x * h, y, dir.z * h)
+end
+
 -- Build orientation quaternion where ship forward (-Z) points along dir,
 -- with auto-horizon up alignment and optional banking roll (radians).
 function M.quat_from_forward(forward, roll_rad)
     local fwd = M.normalize_or_default(forward, vmath.vector3(0, 0, -1))
     -- Clamp pitch slightly away from exact +/-90 deg to keep auto-horizon stable
-    local max_y = 0.94
-    if fwd.y > max_y or fwd.y < -max_y then
-        fwd.y = M.clamp(fwd.y, -max_y, max_y)
-        fwd = M.normalize_or_default(fwd)
-    end
+    fwd = M.clamp_pitch(fwd, 0.94)
     -- Forward is -Z in local ship space, so local +Z is -fwd
     local z_axis = -fwd
     local x_axis = M.normalize_or_default(vmath.cross(UP, z_axis), vmath.vector3(1, 0, 0))
