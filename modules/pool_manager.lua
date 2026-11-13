@@ -26,15 +26,27 @@ local pools = {
     dreadnought = {},
     dust = {},
     pickups = {},
+    rings = {},
 }
+
+M.SHIP_POOL = 20
+M.LASER_POOL = 160
+M.MISSILE_POOL = 40
+M.VFX_POOL = 56
+M.ASTEROID_POOL = 28
+M.RING_POOL = 16
+
+local PILOT_MESHES = { interceptor = true, fighter = true, frigate = true }
+local ring_tint = vmath.vector4(1, 1, 1, 1)
+local ring_scale = vmath.vector3(1, 1, 1)
 
 local function set_comp_enabled(id, comp, enabled)
     msg.post(msg.url(nil, id, comp), enabled and "enable" or "disable")
 end
 
 function M.init()
-    -- 8 Ships
-    for i = 1, 8 do
+    -- Ships (pilots, drones, freighter)
+    for i = 1, M.SHIP_POOL do
         local id = factory.create("/factories#ship", HIDE_POS)
         local entry = {
             id = id,
@@ -44,6 +56,8 @@ function M.init()
                 interceptor = msg.url(nil, id, "mesh_interceptor"),
                 fighter = msg.url(nil, id, "mesh_fighter"),
                 frigate = msg.url(nil, id, "mesh_frigate"),
+                drone = msg.url(nil, id, "mesh_drone"),
+                freighter = msg.url(nil, id, "mesh_freighter"),
                 t2 = msg.url(nil, id, "tier_t2"),
                 t3 = msg.url(nil, id, "tier_t3"),
                 t4 = msg.url(nil, id, "tier_t4"),
@@ -58,8 +72,8 @@ function M.init()
         pools.ships[i] = entry
     end
 
-    -- 120 Laser pulses
-    for i = 1, 120 do
+    -- Laser pulses
+    for i = 1, M.LASER_POOL do
         local id = factory.create("/factories#projectile", HIDE_POS)
         set_comp_enabled(id, "laser", false)
         set_comp_enabled(id, "missile", false)
@@ -70,8 +84,8 @@ function M.init()
         }
     end
 
-    -- 24 Missiles
-    for i = 1, 24 do
+    -- Missiles
+    for i = 1, M.MISSILE_POOL do
         local id = factory.create("/factories#projectile", HIDE_POS)
         set_comp_enabled(id, "laser", false)
         set_comp_enabled(id, "missile", false)
@@ -82,8 +96,8 @@ function M.init()
         }
     end
 
-    -- 40 VFX spheres
-    for i = 1, 40 do
+    -- VFX spheres
+    for i = 1, M.VFX_POOL do
         local id = factory.create("/factories#vfx", HIDE_POS)
         local url = msg.url(nil, id, "sphere")
         msg.post(url, "disable")
@@ -98,8 +112,8 @@ function M.init()
         }
     end
 
-    -- 16 Asteroid / Station slots
-    for i = 1, 16 do
+    -- Asteroid / Station slots
+    for i = 1, M.ASTEROID_POOL do
         local id = factory.create("/factories#asteroid", HIDE_POS)
         local entry = {
             id = id,
@@ -173,30 +187,74 @@ function M.init()
         msg.post(entry.aura, "disable")
         pools.pickups[i] = entry
     end
+
+    -- Ring gates (race / tutorial)
+    for i = 1, M.RING_POOL do
+        local id = factory.create("/factories#ring", HIDE_POS)
+        local url = msg.url(nil, id, "mesh")
+        msg.post(url, "disable")
+        pools.rings[i] = { id = id, url = url, visible = false }
+    end
+end
+
+function M.get_ring_slot(i) return pools.rings[i] end
+
+function M.show_ring(slot, pos, dir, r, g, b, a, scale)
+    if not slot then return end
+    if not slot.visible then
+        msg.post(slot.url, "enable")
+        slot.visible = true
+    end
+    go.set_position(pos, slot.id)
+    go.set_rotation(vmath.quat_from_to(vmath.vector3(0, 1, 0), dir), slot.id)
+    local s = scale or 1
+    ring_scale.x, ring_scale.y, ring_scale.z = s, s, s
+    go.set_scale(ring_scale, slot.id)
+    ring_tint.x, ring_tint.y, ring_tint.z, ring_tint.w = r, g, b, a
+    go.set(slot.url, "tint", ring_tint)
+end
+
+function M.hide_ring(slot)
+    if not slot or not slot.visible then return end
+    msg.post(slot.url, "disable")
+    slot.visible = false
+    go.set_position(HIDE_POS, slot.id)
+end
+
+function M.set_dust_color(r, g, b)
+    dust_tint.x, dust_tint.y, dust_tint.z = r, g, b
+    last_dust_alpha = -1
 end
 
 function M.get_ship_slot(index)
     return pools.ships[index]
 end
 
-function M.configure_ship_visual(slot, class_id, tier, skin_id, trail_id, visible)
+-- mesh: "interceptor" | "fighter" | "frigate" | "drone" | "freighter"
+function M.configure_ship_visual(slot, mesh, tier, skin_id, trail_id, visible)
     if not slot then return end
     local u = slot.urls
-    msg.post(u.interceptor, (visible and class_id == "interceptor") and "enable" or "disable")
-    msg.post(u.fighter, (visible and class_id == "fighter") and "enable" or "disable")
-    msg.post(u.frigate, (visible and class_id == "frigate") and "enable" or "disable")
-
-    msg.post(u.t2, (visible and tier >= 2) and "enable" or "disable")
-    msg.post(u.t3, (visible and tier >= 3) and "enable" or "disable")
-    msg.post(u.t4, (visible and tier >= 4) and "enable" or "disable")
-    msg.post(u.t5, (visible and tier >= 5) and "enable" or "disable")
-    msg.post(u.trail, visible and "enable" or "disable")
+    for _, key in ipairs({ "interceptor", "fighter", "frigate", "drone", "freighter" }) do
+        msg.post(u[key], (visible and mesh == key) and "enable" or "disable")
+    end
+    local pilot = PILOT_MESHES[mesh] and visible
+    msg.post(u.t2, (pilot and tier >= 2) and "enable" or "disable")
+    msg.post(u.t3, (pilot and tier >= 3) and "enable" or "disable")
+    msg.post(u.t4, (pilot and tier >= 4) and "enable" or "disable")
+    msg.post(u.t5, (pilot and tier >= 5) and "enable" or "disable")
+    msg.post(u.trail, (visible and mesh ~= "freighter") and "enable" or "disable")
     msg.post(u.dome, "disable")
+    slot.cloak = 0
+    slot.trail_scale = (mesh == "drone") and 0.6 or 1.0
 
-    slot.active_mesh = u[class_id]
+    slot.active_mesh = u[mesh]
     if visible and slot.active_mesh then
-        local skin = ships_db.SKINS[skin_id] or ships_db.SKINS[1]
-        go.set(slot.active_mesh, "skin_offset", vmath.vector4(skin.u_offset, skin.v_offset, 0, 0))
+        if PILOT_MESHES[mesh] then
+            local skin = ships_db.SKINS[skin_id] or ships_db.SKINS[1]
+            go.set(slot.active_mesh, "skin_offset", vmath.vector4(skin.u_offset, skin.v_offset, 0, 0))
+        else
+            go.set(slot.active_mesh, "skin_offset", ZERO_VEC4)
+        end
         go.set(slot.active_mesh, "tint", ONE_VEC4)
         for _, k in ipairs({ "t2", "t3", "t4" }) do
             go.set(u[k], "skin_offset", ZERO_VEC4)
@@ -215,8 +273,9 @@ function M.set_ship_trail_dash(slot, dash_factor)
     local df = math3d.clamp(dash_factor or 0, 0, 1)
     if math.abs(df - (slot.last_dash_factor or 0)) < 0.005 then return end
     slot.last_dash_factor = df
-    local z_scale = 1.0 + 1.8 * df
-    local xy_scale = 1.0 + 0.4 * df
+    local base = slot.trail_scale or 1.0
+    local z_scale = (1.0 + 1.8 * df) * base
+    local xy_scale = (1.0 + 0.4 * df) * base
     local z_offset = 2.25 * (z_scale - 1.0)
     stretch_vec.x, stretch_vec.y, stretch_vec.z, stretch_vec.w = xy_scale, xy_scale, z_scale, z_offset
     go.set(slot.urls.trail, "stretch", stretch_vec)
@@ -225,14 +284,28 @@ function M.set_ship_trail_dash(slot, dash_factor)
     trail_tint_vec.x = c[1] * boost
     trail_tint_vec.y = c[2] * boost
     trail_tint_vec.z = c[3] * boost
-    trail_tint_vec.w = 0.85 + 0.15 * df
+    trail_tint_vec.w = (0.85 + 0.15 * df) * (1.0 - 0.9 * (slot.cloak or 0))
     go.set(slot.urls.trail, "tint", trail_tint_vec)
 end
 
+local flash_vec = vmath.vector4(1, 1, 1, 1)
 function M.set_ship_hit_flash(slot, flash_amount)
     if not slot or not slot.active_mesh then return end
     local f = 1.0 + flash_amount * 2.0
-    go.set(slot.active_mesh, "tint", vmath.vector4(f, f, f, 1.0))
+    local c = 1.0 - 0.82 * (slot.cloak or 0)
+    flash_vec.x, flash_vec.y, flash_vec.z, flash_vec.w = f * c, f * c, f * c * (1 + 0.3 * (slot.cloak or 0)), 1.0
+    go.set(slot.active_mesh, "tint", flash_vec)
+end
+
+-- Cloak amount 0..1 darkens the hull and fades the trail (enemies cannot lock it).
+function M.set_ship_cloak(slot, amount)
+    if not slot then return end
+    local a = math3d.clamp(amount or 0, 0, 1)
+    if math.abs(a - (slot.cloak or 0)) < 0.01 then return end
+    slot.cloak = a
+    slot.last_dash_factor = -1
+    M.set_ship_hit_flash(slot, 0)
+    M.set_ship_trail_dash(slot, 0)
 end
 
 function M.set_ship_dome(slot, enabled, r, g, b, a)
@@ -491,6 +564,18 @@ function M.hide_environment()
         msg.post(pk.aura, "disable")
         go.set_position(HIDE_POS, pk.id)
     end
+    for i = 1, #pools.rings do
+        local r = pools.rings[i]
+        msg.post(r.url, "disable")
+        r.visible = false
+        go.set_position(HIDE_POS, r.id)
+    end
+end
+
+function M.hide_ship(slot)
+    if not slot then return end
+    M.configure_ship_visual(slot, "interceptor", 1, 1, 1, false)
+    go.set_position(HIDE_POS, slot.id)
 end
 
 function M.hide_all()

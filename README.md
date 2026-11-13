@@ -1,18 +1,17 @@
-# Poki Game Template
+# Void Clash
 
-Template project for HTML5 games on [Poki](https://poki.com/). This project is configured specifically for HTML5 games released on Poki. The project has the latest version of Poki SDK added as a *game.project* dependency.
+Casual 3D arcade space combat for the web, built with Defold 1.14 for Poki / CrazyGames / Yandex Games.
 
-Note: When you beging working on your own Poki game it is recommended to lock which version of the Poki SDK you are using to ensure that your game runs without problems. Pick a Poki SDK version from the [list of releases](https://github.com/defold/extension-poki-sdk/releases) and update the Dependencies field in *game.project* to use this version.
+- 24-mission campaign in 4 sectors (team battles, beacon domination, survival, escort, gate runs, ace hunts,
+  dreadnought raids), quick skirmish battles, pilot levels, contracts.
+- 6 ships in 3 roles, 4 upgrade nodes, 9 role modules, guided missiles, cosmetics.
+- Mouse + keyboard, touch (multi-touch stick + buttons) and gamepad. EN / RU / PT / TR.
 
+Docs:
+- `docs/GAME_DESIGN.md` — controls, ships, modules, modes, campaign, economy.
+- `PROJECT_DOCS.md` — architecture, module contracts, build and test.
 
-## Poki
+Build: see `PROJECT_DOCS.md` §5. Assets are generated with `node tools/gen_assets.js`.
 
-[Poki](https://poki.com/) is an online playground where players and game developers come together to play and create. The games on Poki are created by a diverse global game developer community.
-
-Head over to the [Defold Poki SDK documentation](https://defold.com/extension-poki-sdk/) and the [Poki for Developers page](https://developers.poki.com/) to learn how integrate the Poki SDK in your game and how to join the Poki developer community.
-
-
-
-## Defold for HTML5
-
-Learn more about HTML5 game development using Defold in the [official Defold documentation](https://defold.com/manuals/html5/). Pay extra attention to the [section on how to optimize your Defold game for HTML5](https://defold.com/manuals/html5/#optimizations).
+Poki: the project uses the Poki SDK extension; lock the SDK version in `game.project` before release
+([releases](https://github.com/defold/extension-poki-sdk/releases)).

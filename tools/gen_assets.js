@@ -11,6 +11,15 @@ const zlib = require("zlib");
 
 const ROOT = path.resolve(__dirname, "..");
 
+// Seeded PRNG so noise-based SFX are identical on every run (no spurious git diffs).
+{
+  let seed = 20261113;
+  Math.random = () => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+}
+
 function ensureDir(rel) {
   const full = path.join(ROOT, rel);
   fs.mkdirSync(full, { recursive: true });
@@ -630,6 +639,50 @@ function generateModels() {
     }
     m.exportGltf("assets/models/star_dome.gltf", "star_dome");
   }
+
+  // 10. Race / tutorial ring gate (axis = +Y, oriented in Lua with quat_from_to)
+  {
+    const m = new MeshBuilder();
+    m.addTorus(0, 0, 0, 9.0, 0.6, 28, 6, 6, 14);
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI * 2 + Math.PI / 4;
+      m.addBox(Math.cos(a) * 10.4, 0, Math.sin(a) * 10.4, 1.1, 1.6, 1.1, 6, 14);
+    }
+    m.exportGltf("assets/models/ring_gate.gltf", "ring_gate");
+  }
+
+  // 11. Pirate drone (small spiked orb with a red sensor eye, forward = -Z)
+  {
+    const m = new MeshBuilder();
+    m.addSphere(0, 0, 0, 1.3, 8, 5, 5, 8, 0);
+    m.addSphere(0, 0, -1.05, 0.55, 6, 4, 7, 8, 0); // sensor eye
+    m.addBox(1.7, 0, 0.2, 1.6, 0.18, 1.2, 1, 8); // R fin
+    m.addBox(-1.7, 0, 0.2, 1.6, 0.18, 1.2, 1, 8); // L fin
+    m.addBox(0, 1.45, 0.3, 0.2, 1.0, 0.9, 2, 8); // top spike
+    m.addBox(0, -1.45, 0.3, 0.2, 1.0, 0.9, 2, 8); // bottom spike
+    m.addBox(0, 0, 1.45, 0.7, 0.7, 0.6, 7, 8); // thruster
+    m.exportGltf("assets/models/drone.gltf", "drone");
+  }
+
+  // 12. Escort freighter (long cargo hauler, forward = -Z)
+  {
+    const m = new MeshBuilder();
+    m.addBox(0, 0, 0, 3.6, 3.0, 24, 0, 8); // spine
+    m.addWedge(0, 0.4, -13.5, 1.0, 0.8, 2.0, 1.6, 4.0, 4, 8); // prow
+    m.addBox(0, 2.6, -9.5, 2.6, 2.0, 3.4, 2, 8); // bridge
+    const cont = [[3, 8], [7, 9], [2, 10], [3, 8], [6, 8]];
+    for (let i = 0; i < 5; i++) {
+      const z = -6 + i * 3.6;
+      const c = cont[i];
+      m.addBox(3.2, 0, z, 2.6, 2.6, 3.2, c[0], c[1]);
+      m.addBox(-3.2, 0, z, 2.6, 2.6, 3.2, c[0], c[1]);
+    }
+    m.addBox(1.6, 0, 13.2, 2.0, 2.0, 2.6, 2, 8); // engines
+    m.addBox(-1.6, 0, 13.2, 2.0, 2.0, 2.6, 2, 8);
+    m.addBox(1.6, 0, 14.6, 1.4, 1.4, 0.4, 6, 8); // engine glow
+    m.addBox(-1.6, 0, 14.6, 1.4, 1.4, 0.4, 6, 8);
+    m.exportGltf("assets/models/freighter.gltf", "freighter");
+  }
 }
 
 // ============================================================================
@@ -750,6 +803,64 @@ function generateSfx() {
     const tone = Math.sin(2 * Math.PI * freq * t) * 0.65 + Math.sin(2 * Math.PI * (freq * 0.5) * t) * 0.35;
     return tone * env * 0.38;
   }));
+  // Ring gate pass chime (two bright partials)
+  writeWav("assets/sfx/ring.wav", synth(0.32, (t, p) => {
+    const f = p < 0.35 ? 988 : 1319;
+    const env = Math.pow(1 - p, 1.4) * Math.min(1, p * 40);
+    return (Math.sin(2 * Math.PI * f * t) * 0.6 + Math.sin(2 * Math.PI * f * 2 * t) * 0.15) * env * 0.38;
+  }));
+  // Level up arpeggio
+  writeWav("assets/sfx/levelup.wav", synth(1.1, (t, p) => {
+    const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5];
+    const idx = Math.min(4, Math.floor(p * 6));
+    const lp = p * 6 - idx;
+    const f = notes[idx];
+    const env = Math.min(1, lp * 10) * Math.pow(1 - p, 0.6);
+    return (Math.sin(2 * Math.PI * f * t) * 0.55 + Math.sin(2 * Math.PI * f * 2.01 * t) * 0.15) * env * 0.4;
+  }));
+  // Incoming missile / danger alarm (two fast beeps)
+  writeWav("assets/sfx/alarm.wav", synth(0.36, (t, p) => {
+    const on = (p < 0.4) || (p > 0.55 && p < 0.95);
+    if (!on) return 0;
+    return Math.sign(Math.sin(2 * Math.PI * 1250 * t)) * 0.16;
+  }));
+  // Wave incoming horn
+  writeWav("assets/sfx/wave.wav", synth(0.9, (t, p) => {
+    const f = 110 + 30 * Math.sin(p * Math.PI);
+    const env = Math.sin(Math.PI * p);
+    return (Math.sin(2 * Math.PI * f * t) * 0.5 + Math.sin(2 * Math.PI * f * 1.5 * t) * 0.3 + Math.sin(2 * Math.PI * f * 2 * t) * 0.2) * env * 0.45;
+  }));
+  // Afterburner ignition whoosh
+  writeWav("assets/sfx/boost.wav", synth(0.35, (t, p) => {
+    const noise = (Math.random() * 2 - 1);
+    const tone = Math.sin(2 * Math.PI * (120 + 260 * p) * t);
+    return (noise * 0.55 + tone * 0.35) * Math.sin(Math.PI * Math.min(1, p * 1.4)) * 0.32;
+  }));
+  // Objective complete (major third up)
+  writeWav("assets/sfx/objective.wav", synth(0.55, (t, p) => {
+    const f = p < 0.45 ? 659.25 : 830.6;
+    const env = Math.pow(1 - p, 0.9) * Math.min(1, p * 30);
+    return (Math.sin(2 * Math.PI * f * t) * 0.5 + Math.sin(2 * Math.PI * f * 0.5 * t) * 0.25) * env * 0.4;
+  }));
+  // Denied buzz
+  writeWav("assets/sfx/error.wav", synth(0.18, (t, p) => {
+    return Math.sign(Math.sin(2 * Math.PI * 140 * t)) * (1 - p) * 0.14;
+  }));
+  // Reward / coin tick
+  writeWav("assets/sfx/coin.wav", synth(0.16, (t, p) => {
+    const f = p < 0.3 ? 1568 : 2093;
+    return Math.sin(2 * Math.PI * f * t) * Math.pow(1 - p, 1.5) * 0.28;
+  }));
+  // Hit confirm tick (very short, high)
+  writeWav("assets/sfx/hit.wav", synth(0.05, (t, p) => {
+    return Math.sin(2 * Math.PI * 2400 * t) * Math.pow(1 - p, 2) * 0.22;
+  }));
+  // Kill confirm (punchy low + high ping)
+  writeWav("assets/sfx/kill.wav", synth(0.3, (t, p) => {
+    const low = Math.sin(2 * Math.PI * (160 - 90 * p) * t) * Math.pow(1 - p, 2);
+    const ping = Math.sin(2 * Math.PI * 1760 * t) * Math.pow(1 - p, 3);
+    return (low * 0.5 + ping * 0.3) * 0.5;
+  }));
 }
 
 // ============================================================================
@@ -801,8 +912,10 @@ function makeCanvas(w, h) {
 function generateUiAssets() {
   // White 8x8 pixel for tinted bars/panels
   {
+    // Filled directly: rect() with radius 0 yields alpha 0.5 (edge falloff), which
+    // made every "white" box (bars, overlays) half transparent.
     const c = makeCanvas(16, 16);
-    c.rect(0, 0, 16, 16, 0, [255, 255, 255], 255);
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) c.set(x, y, 255, 255, 255, 255);
     writePng("assets/ui/white.png", 16, 16, c.data);
   }
   // Rounded panel (64x64, 9-slice friendly)
@@ -879,11 +992,91 @@ function generateUiAssets() {
     writePng("assets/ui/hit_marker.png", 64, 64, c.data);
   }
 
+  // Five-point star (mission rating)
+  {
+    const c = makeCanvas(64, 64);
+    const pts = [];
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + i * Math.PI / 5;
+      const r = (i % 2 === 0) ? 30 : 12.5;
+      pts.push([32 + Math.cos(a) * r, 33 + Math.sin(a) * r]);
+    }
+    const inside = (x, y) => {
+      let ins = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const [xi, yi] = pts[i], [xj, yj] = pts[j];
+        if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) ins = !ins;
+      }
+      return ins;
+    };
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        let cov = 0;
+        for (let sy = 0; sy < 4; sy++) for (let sx = 0; sx < 4; sx++) {
+          if (inside(x + (sx + 0.5) / 4, y + (sy + 0.5) / 4)) cov++;
+        }
+        if (cov > 0) c.set(x, y, 255, 255, 255, Math.round(cov / 16 * 255));
+      }
+    }
+    writePng("assets/ui/star.png", 64, 64, c.data);
+  }
+  // Radar scope (256x256): filled disc, range rings, cross lines
+  {
+    const c = makeCanvas(256, 256);
+    c.circle(128, 128, 126, 0, [255, 255, 255], 46);
+    c.circle(128, 128, 126, 122, [255, 255, 255], 200);
+    c.circle(128, 128, 85, 83, [255, 255, 255], 90);
+    c.circle(128, 128, 43, 41, [255, 255, 255], 90);
+    for (let i = 8; i < 248; i++) {
+      c.set(i, 128, 255, 255, 255, 60);
+      c.set(128, i, 255, 255, 255, 60);
+    }
+    writePng("assets/ui/radar.png", 256, 256, c.data);
+  }
+  // Damage / low-hull vignette (transparent centre, opaque edges)
+  {
+    const c = makeCanvas(128, 128);
+    for (let y = 0; y < 128; y++) {
+      for (let x = 0; x < 128; x++) {
+        const dx = (x + 0.5 - 64) / 64, dy = (y + 0.5 - 64) / 64;
+        const d = Math.sqrt(dx * dx + dy * dy) / Math.SQRT2;
+        const t = Math.max(0, Math.min(1, (d - 0.45) / 0.55));
+        const a = t * t * (3 - 2 * t);
+        c.set(x, y, 255, 255, 255, Math.round(a * 255));
+      }
+    }
+    writePng("assets/ui/vignette.png", 128, 128, c.data);
+  }
+  // Padlock (locked content)
+  {
+    const c = makeCanvas(48, 48);
+    c.circle(24, 19, 11, 7, [255, 255, 255], 255);
+    for (let y = 0; y < 48; y++) for (let x = 0; x < 48; x++) {
+      if (y > 19) c.set(x, y, 0, 0, 0, 0);
+    }
+    c.rect(10, 20, 28, 22, 4, [255, 255, 255], 255);
+    c.circle(24, 29, 3.2, 0, [20, 30, 45], 255);
+    c.rect(22.5, 30, 3, 7, 1, [20, 30, 45], 255);
+    writePng("assets/ui/padlock.png", 48, 48, c.data);
+  }
+  // Soft glow dot (radar blips, banners)
+  {
+    const c = makeCanvas(32, 32);
+    for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
+      const d = Math.hypot(x + 0.5 - 16, y + 0.5 - 16) / 16;
+      if (d < 1) {
+        const a = d < 0.55 ? 1 : Math.pow(1 - (d - 0.55) / 0.45, 1.6);
+        c.set(x, y, 255, 255, 255, Math.round(a * 255));
+      }
+    }
+    writePng("assets/ui/dot.png", 32, 32, c.data);
+  }
+
   // Generate ui.atlas
   const images = [
     "white", "panel_rounded", "reticle", "lock_ring",
     "lead_pip", "stick_base", "stick_knob", "btn_circle", "arrow_up",
-    "hit_marker"
+    "hit_marker", "star", "radar", "vignette", "padlock", "dot"
   ];
   const atlas = images.map(n => `images {\n  image: "/assets/ui/${n}.png"\n}`).join("\n") +
     "\nmargin: 2\nextrude_borders: 2\ninner_padding: 0\n";

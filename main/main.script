@@ -1,33 +1,58 @@
+-- Game flow controller: hangar <-> battle, simulation tick, retry / next mission.
 local progress = require("modules.progress")
 local pool_manager = require("modules.pool_manager")
 local match_controller = require("modules.match_controller")
 local camera_rig = require("modules.camera_rig")
+local input_state = require("modules.input_state")
+local campaign_db = require("data.campaign_db")
 local ships_db = require("data.ships_db")
+local arenas_db = require("data.arenas_db")
 local audio = require("modules.audio")
 local poki = require("modules.poki")
 
-local function enter_battle(self)
+local function start_battle(self, cfg)
     self.screen = "battle"
+    self.last_cfg = cfg
     msg.post("/hangar#hangar", "set_visible", { visible = false })
     msg.post("/hud#hud_combat", "set_visible", { visible = true })
-    match_controller.start_match()
+    match_controller.start(cfg)
+end
+
+local function start_mission(self, mission_id)
+    if not campaign_db.get(mission_id) then mission_id = "s1m1" end
+    start_battle(self, match_controller.campaign_config(mission_id))
+end
+
+local function start_skirmish(self, preset_id)
+    start_battle(self, match_controller.skirmish_config(preset_id))
 end
 
 local function refresh_hangar_ship(self, preview)
     if self.screen ~= "hangar" then return end
-    local s = progress.get()
-    local stats = ships_db.get_effective_stats(s.selected_class, progress.get_player_upgrades(s.selected_class))
     local slot = pool_manager.get_ship_slot(1)
-    local skin_id = (preview and preview.skin_id) or s.equipped_skin
-    local trail_id = (preview and preview.trail_id) or s.equipped_trail
-    pool_manager.configure_ship_visual(slot, s.selected_class, stats.tier, skin_id, trail_id, true)
+    if preview and preview.hidden then
+        pool_manager.hide_ship(slot)
+        return
+    end
+    local s = progress.get()
+    local sid = (preview and preview.ship_id) or s.selected
+    local u = s.owned[sid] and progress.get_upgrades(sid) or ships_db.uniform_upgrades(1)
+    local stats = ships_db.get_effective_stats(sid, u)
+    local skin = (preview and preview.skin_id) or s.equipped_skin
+    local trail = (preview and preview.trail_id) or s.equipped_trail
+    pool_manager.configure_ship_visual(slot, stats.mesh, stats.tier, skin, trail, true)
     go.set_position(vmath.vector3(0, 0, 0), slot.id)
     go.set_rotation(vmath.quat(), slot.id)
+    pool_manager.set_ship_trail_dash(slot, 0)
 end
 
 local function enter_hangar(self)
     self.screen = "hangar"
     match_controller.stop_match()
+    input_state.reset()
+    local th = arenas_db.THEMES.ion
+    msg.post("@render:", "clear_color", { color = vmath.vector4(th.clear[1], th.clear[2], th.clear[3], 1) })
+    go.set("/star_dome#mesh", "tint", vmath.vector4(th.stars[1], th.stars[2], th.stars[3], th.stars[4]))
     msg.post("/hud#hud_combat", "set_visible", { visible = false })
     msg.post("/hangar#hangar", "set_visible", { visible = true })
     refresh_hangar_ship(self)
@@ -37,14 +62,16 @@ function init(self)
     math.randomseed(os.time())
     msg.post(".", "acquire_input_focus")
     poki.init()
-
     local p = progress.load()
-    audio.set_muted(p.muted)
+    audio.set_muted(p.settings.muted)
     audio.start_ambient()
     pool_manager.init()
-
-    -- Rule of First 15 Seconds: jump straight into combat on Interceptor
-    enter_battle(self)
+    -- Poki "first 15 seconds": brand-new pilots drop straight into the flight tutorial.
+    if progress.get_stars("s1m1") == 0 and p.match_count == 0 then
+        start_mission(self, "s1m1")
+    else
+        enter_hangar(self)
+    end
 end
 
 function update(self, dt)
@@ -52,23 +79,51 @@ function update(self, dt)
     if self.screen == "hangar" then
         camera_rig.update_hangar(vmath.vector3(0, 0, 0), safe_dt)
     elseif self.screen == "battle" then
-        local m = match_controller.get_state()
-        if m.active and not m.paused then
-            local inp = match_controller.get_input_state()
-            match_controller.update(inp, safe_dt)
-            inp.dash_pressed = false
-            inp.mod1_pressed = false
-            inp.mod2_pressed = false
-        end
+        match_controller.update(safe_dt)
+        input_state.clear_edges()
     end
 end
 
 function on_message(self, message_id, message)
     if message_id == hash("open_hangar") then
         enter_hangar(self)
-    elseif message_id == hash("start_battle") then
-        enter_battle(self)
+    elseif message_id == hash("start_mission") then
+        start_mission(self, message.id)
+    elseif message_id == hash("start_skirmish") then
+        start_skirmish(self, message.id)
+    elseif message_id == hash("retry") then
+        if self.last_cfg then
+            if self.last_cfg.kind == "campaign" then
+                start_mission(self, self.last_cfg.mission_id)
+            else
+                start_skirmish(self, self.last_cfg.preset_id)
+            end
+        else
+            enter_hangar(self)
+        end
+    elseif message_id == hash("next") then
+        local cfg = self.last_cfg
+        local res = match_controller.get_state().result
+        if cfg and cfg.kind == "campaign" then
+            if res and res.won then
+                local m = campaign_db.get(cfg.mission_id)
+                local nxt = m and campaign_db.MISSIONS[m.order + 1]
+                if nxt and progress.mission_unlocked(nxt.id) then
+                    start_mission(self, nxt.id)
+                else
+                    start_mission(self, progress.next_mission().id)
+                end
+            else
+                start_mission(self, cfg.mission_id)
+            end
+        elseif cfg then
+            start_skirmish(self, cfg.preset_id)
+        else
+            enter_hangar(self)
+        end
     elseif message_id == hash("refresh_hangar_preview") then
         refresh_hangar_ship(self, message)
+    elseif message_id == hash("hangar_framing") then
+        camera_rig.set_hangar_framing(message.x or 0, message.dist or 12)
     end
 end

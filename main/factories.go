@@ -38,3 +38,8 @@ embedded_components {
   type: "factory"
   data: "prototype: \"/entities/pickup/pickup.go\"\n"
 }
+embedded_components {
+  id: "ring"
+  type: "factory"
+  data: "prototype: \"/entities/ring/ring.go\"\n"
+}

@@ -14,6 +14,16 @@ embedded_components {
   data: "mesh: \"/assets/models/ship_frigate.gltf\"\nname: \"frigate\"\nmaterials {\n  name: \"default\"\n  material: \"/assets/materials/space_palette.material\"\n  textures {\n    sampler: \"tex0\"\n    texture: \"/assets/textures/palette_256.png\"\n  }\n}\n"
 }
 embedded_components {
+  id: "mesh_drone"
+  type: "model"
+  data: "mesh: \"/assets/models/drone.gltf\"\nname: \"drone\"\nmaterials {\n  name: \"default\"\n  material: \"/assets/materials/space_palette.material\"\n  textures {\n    sampler: \"tex0\"\n    texture: \"/assets/textures/palette_256.png\"\n  }\n}\n"
+}
+embedded_components {
+  id: "mesh_freighter"
+  type: "model"
+  data: "mesh: \"/assets/models/freighter.gltf\"\nname: \"freighter\"\nmaterials {\n  name: \"default\"\n  material: \"/assets/materials/space_palette.material\"\n  textures {\n    sampler: \"tex0\"\n    texture: \"/assets/textures/palette_256.png\"\n  }\n}\n"
+}
+embedded_components {
   id: "tier_t2"
   type: "model"
   data: "mesh: \"/assets/models/tier_wings_t2.gltf\"\nname: \"t2\"\nmaterials {\n  name: \"default\"\n  material: \"/assets/materials/space_palette.material\"\n  textures {\n    sampler: \"tex0\"\n    texture: \"/assets/textures/palette_256.png\"\n  }\n}\n"

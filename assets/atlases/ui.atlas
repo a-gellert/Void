@@ -28,6 +28,21 @@ images {
 images {
   image: "/assets/ui/hit_marker.png"
 }
+images {
+  image: "/assets/ui/star.png"
+}
+images {
+  image: "/assets/ui/radar.png"
+}
+images {
+  image: "/assets/ui/vignette.png"
+}
+images {
+  image: "/assets/ui/padlock.png"
+}
+images {
+  image: "/assets/ui/dot.png"
+}
 margin: 2
 extrude_borders: 2
 inner_padding: 0

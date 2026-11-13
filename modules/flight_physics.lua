@@ -1,7 +1,18 @@
+-- 3D arcade flight model (pure Lua, no physics engine).
+--  * Player: rate control. Steer input sets yaw/pitch angular velocity, smoothed by
+--    hull agility. Auto-horizon keeps the ship upright (no manual roll).
+--  * AI: steers towards a desired direction along the shortest arc.
+--  * Shared: throttle (cruise / afterburner on energy / brake), lateral strafe,
+--    evasive dash with barrel roll, obstacle push-out + bump events, soft arena shell.
 local math3d = require("modules.math3d")
 local arenas_db = require("data.arenas_db")
+local modules_db = require("data.modules_db")
 
 local M = {}
+
+local UP = vmath.vector3(0, 1, 0)
+local MAX_PITCH_Y = 0.92
+local TWO_PI = math.pi * 2
 
 local obstacles = {}
 
@@ -13,7 +24,7 @@ function M.get_obstacles()
     return obstacles
 end
 
---- Compute shortest vector from a torus centerline circle to point (px, py, pz).
+--- Shortest vector from a torus centreline circle to point (px, py, pz).
 function M.torus_closest_offset(px, py, pz, obs)
     local dx = px - obs.x
     local dy = py - obs.y
@@ -44,8 +55,9 @@ function M.torus_closest_offset(px, py, pz, obs)
     return ox, oy, oz, ox * ox + oy * oy + oz * oz
 end
 
+-- Push the ship out of an obstacle. Returns impact speed along the normal (0 if none).
 local function resolve_repulsion(ship, dx, dy, dz, d_sq, min_r)
-    if d_sq >= min_r * min_r then return end
+    if d_sq >= min_r * min_r then return 0 end
     local d = math.sqrt(d_sq)
     if d < 0.001 then
         dx, dy, dz, d = 0, 1, 0, 1
@@ -55,74 +67,127 @@ local function resolve_repulsion(ship, dx, dy, dz, d_sq, min_r)
     ship.pos.x = ship.pos.x + nx * push
     ship.pos.y = ship.pos.y + ny * push
     ship.pos.z = ship.pos.z + nz * push
+    local impact = 0
+    local v = ship.vel
+    if v then
+        impact = -(v.x * nx + v.y * ny + v.z * nz)
+    end
     local dot_n = ship.forward.x * nx + ship.forward.y * ny + ship.forward.z * nz
     if dot_n < 0 then
         ship.forward = math3d.normalize_or_default(vmath.vector3(
             ship.forward.x - nx * dot_n * 1.1,
             ship.forward.y - ny * dot_n * 1.1,
             ship.forward.z - nz * dot_n * 1.1
-        ))
+        ), ship.forward)
     end
+    return math.max(0, impact)
 end
 
-function M.update_ship(ship, aim_dir, dt)
-    if not ship.alive then return end
+local function rotate_about(v, ax, ay, az, angle)
+    -- Rodrigues rotation of v around unit axis (ax, ay, az).
+    local c, s = math.cos(angle), math.sin(angle)
+    local dot = v.x * ax + v.y * ay + v.z * az
+    local cx = ay * v.z - az * v.y
+    local cy = az * v.x - ax * v.z
+    local cz = ax * v.y - ay * v.x
+    return vmath.vector3(
+        v.x * c + cx * s + ax * dot * (1 - c),
+        v.y * c + cy * s + ay * dot * (1 - c),
+        v.z * c + cz * s + az * dot * (1 - c)
+    )
+end
 
-    local target_dir = math3d.normalize_or_default(aim_dir, ship.forward)
-    -- Clamp vertical pitch component to +/- 70 degrees so auto-horizon never flips upside down
-    local max_pitch_y = 0.92
-    if target_dir.y > max_pitch_y or target_dir.y < -max_pitch_y then
-        target_dir = math3d.clamp_pitch(target_dir, max_pitch_y, ship.forward)
+-- Throttle + energy. ctl = { boost = bool, brake = bool }
+local function update_throttle(ship, ctl, dt)
+    local ab = modules_db.AFTERBURNER
+    local wants_boost = ctl.boost and (ship.max_energy or 0) > 0 and not ctl.brake
+    if wants_boost and ship.energy > 0 and (ship.boosting or ship.energy >= ab.min_to_start) then
+        if not ship.boosting then ship.boost_started = true end
+        ship.boosting = true
+        ship.energy = math.max(0, ship.energy - ab.drain * dt)
+        ship.energy_delay = ab.regen_delay
+    else
+        ship.boosting = false
+        if ship.energy_delay > 0 then
+            ship.energy_delay = ship.energy_delay - dt
+        elseif ship.energy < ship.max_energy then
+            ship.energy = math.min(ship.max_energy, ship.energy + ab.regen * dt)
+        end
     end
+    ship.braking = ctl.brake and not ship.boosting
 
-    -- Compute lateral turn delta for crisp banking roll
-    local right_x = -ship.forward.z
-    local right_z = ship.forward.x
-    local lateral = right_x * target_dir.x + right_z * target_dir.z
-    local target_roll = math3d.clamp(-lateral * 1.15, -0.78, 0.78)
-    ship.roll = math3d.lerp(ship.roll or 0, target_roll, math.min(1.0, dt * 7.5))
-
-    -- Smoothly turn ship forward vector along the shortest arc (slerp-like),
-    -- then enforce the pitch limit on the result as well: component-wise lerp
-    -- near the pole could amplify |y| past the target limit, let the nose reach
-    -- vertical and make the orientation basis flip/spin.
-    local turn_alpha = math.min(1.0, ship.turn_rate * dt)
-    ship.forward = math3d.rotate_towards(ship.forward, target_dir, turn_alpha)
-    ship.forward = math3d.clamp_pitch(ship.forward, max_pitch_y, ship.forward)
-
-    -- Compute speed (dash / microwarp / base)
-    local spd = ship.speed
+    local target = ship.speed
     if ship.dash_timer > 0 then
-        spd = ship.boost_speed
+        target = ship.speed * modules_db.DASH.speed_mult
+    elseif ship.boosting then
+        target = ship.speed * ship.boost_mult
+    elseif ship.braking then
+        target = ship.speed * modules_db.BRAKE.speed_mult
     end
+    if ship.speed_mult then target = target * ship.speed_mult end
+    local cur = ship.cur_speed or ship.speed
+    local rate = (target > cur) and ship.speed * 2.4 or ship.speed * 1.8
+    if ship.dash_timer > 0 then rate = ship.speed * 8.0 end
+    if target > cur then
+        cur = math.min(target, cur + rate * dt)
+    else
+        cur = math.max(target, cur - rate * dt)
+    end
+    ship.cur_speed = cur
+end
 
-    ship.vel = ship.forward * spd
-    ship.pos.x = ship.pos.x + ship.vel.x * dt
-    ship.pos.y = ship.pos.y + ship.vel.y * dt
-    ship.pos.z = ship.pos.z + ship.vel.z * dt
+local function turn_mult(ship)
+    if ship.braking then return modules_db.BRAKE.turn_mult end
+    if ship.boosting then return modules_db.BOOST_TURN_MULT end
+    return 1.0
+end
 
-    -- Pure Lua sphere & torus asteroid/station repulsion (no Box2D/Bullet)
+-- Shared integration: strafe, position, obstacles, arena shell, orientation.
+local function integrate(ship, strafe_in, bank, dt)
+    -- Lateral strafe (horizontal right axis)
+    local rx, rz = -ship.forward.z, ship.forward.x
+    local rl = math.sqrt(rx * rx + rz * rz)
+    if rl < 1e-4 then rx, rz, rl = 1, 0, 1 end
+    rx, rz = rx / rl, rz / rl
+    local target_strafe = (strafe_in or 0) * (ship.strafe_speed or 0)
+    ship.strafe_vel = math3d.lerp(ship.strafe_vel or 0, target_strafe, math.min(1.0, dt * 6.0))
+
+    local spd = ship.cur_speed or ship.speed
+    local v = ship.vel
+    v.x = ship.forward.x * spd + rx * ship.strafe_vel
+    v.y = ship.forward.y * spd
+    v.z = ship.forward.z * spd + rz * ship.strafe_vel
+    ship.pos.x = ship.pos.x + v.x * dt
+    ship.pos.y = ship.pos.y + v.y * dt
+    ship.pos.z = ship.pos.z + v.z * dt
+
+    -- Obstacles (spheres and tori)
     local sr = ship.radius
+    local impact = 0
     for i = 1, #obstacles do
         local obs = obstacles[i]
+        local imp
         if obs.kind == "torus" then
             local ox, oy, oz, d_sq = M.torus_closest_offset(ship.pos.x, ship.pos.y, ship.pos.z, obs)
-            resolve_repulsion(ship, ox, oy, oz, d_sq, sr + obs.minor_r)
+            imp = resolve_repulsion(ship, ox, oy, oz, d_sq, sr + obs.minor_r)
         else
             local dx = ship.pos.x - obs.x
             local dy = ship.pos.y - obs.y
             local dz = ship.pos.z - obs.z
-            resolve_repulsion(ship, dx, dy, dz, dx * dx + dy * dy + dz * dz, sr + obs.r)
+            imp = resolve_repulsion(ship, dx, dy, dz, dx * dx + dy * dy + dz * dz, sr + obs.r)
         end
+        if imp > impact then impact = imp end
+    end
+    if impact > 0 then
+        ship.bump_impact = math.max(ship.bump_impact or 0, impact)
     end
 
-    -- Soft spherical arena boundary. Start turning the nose back inside a bit
-    -- before the hard shell, otherwise a ship with neutral steering slides
-    -- along it and ends up circling the arena forever.
+    -- Soft spherical arena boundary: turn the nose back in before the hard shell.
     local max_r = arenas_db.ARENA_RADIUS
     local soft_r = max_r * 0.90
     local pos_sq = ship.pos.x * ship.pos.x + ship.pos.y * ship.pos.y + ship.pos.z * ship.pos.z
-    if pos_sq > soft_r * soft_r then
+    ship.near_boundary = pos_sq > soft_r * soft_r
+    if ship.near_boundary then
         local d = math.sqrt(pos_sq)
         local inv = 1.0 / d
         local nx, ny, nz = ship.pos.x * inv, ship.pos.y * inv, ship.pos.z * inv
@@ -135,22 +200,19 @@ function M.update_ship(ship, aim_dir, dt)
                 ship.forward.y - ny * pull,
                 ship.forward.z - nz * pull
             ), ship.forward),
-            math.min(1.0, dt * 14.0)
+            math.min(1.0, dt * 6.0 * t + dt * 2.0)
         )
-
         if d > max_r then
             local scale = max_r * inv
             ship.pos.x = ship.pos.x * scale
             ship.pos.y = ship.pos.y * scale
             ship.pos.z = ship.pos.z * scale
-            -- Hard fallback: never keep the nose pointing outside the shell.
             local dot_n = ship.forward.x * nx + ship.forward.y * ny + ship.forward.z * nz
             if dot_n > 0 then
                 local tx = ship.forward.x - nx * dot_n
                 local ty = ship.forward.y - ny * dot_n
                 local tz = ship.forward.z - nz * dot_n
-                local t_sq = tx * tx + ty * ty + tz * tz
-                if t_sq > 1e-6 then
+                if tx * tx + ty * ty + tz * tz > 1e-6 then
                     ship.forward = math3d.normalize_or_default(vmath.vector3(tx, ty, tz), ship.forward)
                 else
                     ship.forward = vmath.vector3(-nx, -ny, -nz)
@@ -158,12 +220,83 @@ function M.update_ship(ship, aim_dir, dt)
             end
         end
     end
+    ship.forward = math3d.clamp_pitch(ship.forward, MAX_PITCH_Y, ship.forward)
 
-    -- Repulsion or the boundary turn may have nudged the pitch; keep the
-    -- auto-horizon basis away from the pole.
-    ship.forward = math3d.clamp_pitch(ship.forward, max_pitch_y, ship.forward)
+    -- Visual roll: banking + strafe lean + evasive barrel roll.
+    local strafe_lean = 0
+    if ship.strafe_speed and ship.strafe_speed > 0 then
+        strafe_lean = -(ship.strafe_vel / ship.strafe_speed) * 0.35
+    end
+    local target_roll = math3d.clamp(bank + strafe_lean, -0.95, 0.95)
+    ship.roll = math3d.lerp(ship.roll or 0, target_roll, math.min(1.0, dt * 7.5))
+    local roll = ship.roll
+    if ship.dash_timer > 0 and ship.dash_duration and ship.dash_duration > 0 then
+        local p = 1.0 - ship.dash_timer / ship.dash_duration
+        roll = roll + (ship.dash_roll_sign or 1) * TWO_PI * (p * p * (3 - 2 * p))
+    end
+    ship.rot = math3d.quat_from_forward(ship.forward, roll)
+end
 
-    ship.rot = math3d.quat_from_forward(ship.forward, ship.roll)
+local function shape(v)
+    -- Expo curve: precise near centre, fast at the edge.
+    return v * (0.35 + 0.65 * math.abs(v))
+end
+
+--- Player flight. inp = input_state, opts = { sensitivity, invert_y }
+function M.update_player(ship, inp, opts, dt)
+    if not ship.alive then return end
+    update_throttle(ship, inp, dt)
+    local sens = (opts and opts.sensitivity) or 1.0
+    local inv = (opts and opts.invert_y) and -1 or 1
+    local max_rate = ship.turn_rate * 0.62 * turn_mult(ship) * sens
+    local target_yaw = -shape(inp.steer_x) * max_rate
+    local target_pitch = shape(inp.steer_y) * max_rate * inv
+    local k = math.min(1.0, (ship.agility or 7) * dt)
+    ship.yaw_vel = math3d.lerp(ship.yaw_vel or 0, target_yaw, k)
+    ship.pitch_vel = math3d.lerp(ship.pitch_vel or 0, target_pitch, k)
+
+    local f = rotate_about(ship.forward, 0, 1, 0, ship.yaw_vel * dt)
+    local r = vmath.cross(f, UP)
+    local rl = vmath.length(r)
+    if rl > 1e-4 then
+        r = r * (1.0 / rl)
+        f = rotate_about(f, r.x, r.y, r.z, ship.pitch_vel * dt)
+    end
+    ship.forward = math3d.clamp_pitch(math3d.normalize_or_default(f, ship.forward), MAX_PITCH_Y, ship.forward)
+    -- Stop pitching into the clamp so input releases instantly at the limit.
+    if (ship.forward.y >= MAX_PITCH_Y - 0.001 and ship.pitch_vel > 0) or (ship.forward.y <= -MAX_PITCH_Y + 0.001 and ship.pitch_vel < 0) then
+        ship.pitch_vel = 0
+    end
+    local bank = 0
+    if max_rate > 0 then bank = math3d.clamp(ship.yaw_vel / max_rate, -1, 1) * 0.8 end
+    integrate(ship, inp.strafe, bank, dt)
+end
+
+--- AI flight towards a desired direction. ctl = { boost, brake, strafe }
+function M.update_ai(ship, aim_dir, ctl, dt)
+    if not ship.alive then return end
+    update_throttle(ship, ctl, dt)
+    local target_dir = math3d.normalize_or_default(aim_dir, ship.forward)
+    if target_dir.y > MAX_PITCH_Y or target_dir.y < -MAX_PITCH_Y then
+        target_dir = math3d.clamp_pitch(target_dir, MAX_PITCH_Y, ship.forward)
+    end
+    local rx, rz = -ship.forward.z, ship.forward.x
+    local lateral = rx * target_dir.x + rz * target_dir.z
+    local bank = math3d.clamp(-lateral * 1.15, -0.78, 0.78)
+    local turn_alpha = math.min(1.0, ship.turn_rate * turn_mult(ship) * dt)
+    ship.forward = math3d.rotate_towards(ship.forward, target_dir, turn_alpha)
+    integrate(ship, ctl.strafe or 0, bank, dt)
+end
+
+--- Kinematic path follower (freighter). Moves along forward at cur_speed.
+function M.update_scripted(ship, aim_dir, dt)
+    if not ship.alive then return end
+    ship.boosting = false
+    ship.braking = false
+    ship.cur_speed = ship.speed * (ship.speed_mult or 1)
+    local turn_alpha = math.min(1.0, ship.turn_rate * dt)
+    ship.forward = math3d.rotate_towards(ship.forward, math3d.normalize_or_default(aim_dir, ship.forward), turn_alpha)
+    integrate(ship, 0, 0, dt)
 end
 
 return M

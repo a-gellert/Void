@@ -4,37 +4,161 @@ mouse_trigger {
 }
 mouse_trigger {
   input: MOUSE_BUTTON_2
-  action: "mod1"
+  action: "missile"
+}
+mouse_trigger {
+  input: MOUSE_WHEEL_UP
+  action: "wheel_up"
+}
+mouse_trigger {
+  input: MOUSE_WHEEL_DOWN
+  action: "wheel_down"
+}
+key_trigger {
+  input: KEY_W
+  action: "throttle_up"
+}
+key_trigger {
+  input: KEY_UP
+  action: "throttle_up"
+}
+key_trigger {
+  input: KEY_S
+  action: "brake"
+}
+key_trigger {
+  input: KEY_DOWN
+  action: "brake"
+}
+key_trigger {
+  input: KEY_A
+  action: "strafe_left"
+}
+key_trigger {
+  input: KEY_LEFT
+  action: "strafe_left"
+}
+key_trigger {
+  input: KEY_D
+  action: "strafe_right"
+}
+key_trigger {
+  input: KEY_RIGHT
+  action: "strafe_right"
 }
 key_trigger {
   input: KEY_LSHIFT
-  action: "dash"
+  action: "boost"
 }
 key_trigger {
   input: KEY_RSHIFT
-  action: "dash"
+  action: "boost"
 }
 key_trigger {
   input: KEY_SPACE
   action: "dash"
 }
 key_trigger {
+  input: KEY_Q
+  action: "mod1"
+}
+key_trigger {
   input: KEY_1
   action: "mod1"
+}
+key_trigger {
+  input: KEY_E
+  action: "mod2"
 }
 key_trigger {
   input: KEY_2
   action: "mod2"
 }
 key_trigger {
-  input: KEY_BACK
-  action: "key_back"
+  input: KEY_F
+  action: "missile"
+}
+key_trigger {
+  input: KEY_R
+  action: "missile"
+}
+key_trigger {
+  input: KEY_TAB
+  action: "scoreboard"
 }
 key_trigger {
   input: KEY_ESC
   action: "pause"
 }
+key_trigger {
+  input: KEY_P
+  action: "pause"
+}
+key_trigger {
+  input: KEY_ENTER
+  action: "confirm"
+}
+key_trigger {
+  input: KEY_BACK
+  action: "key_back"
+}
 touch_trigger {
   input: TOUCH_MULTI
   action: "touch_multi"
+}
+gamepad_trigger {
+  input: GAMEPAD_LSTICK_LEFT
+  action: "gp_left"
+}
+gamepad_trigger {
+  input: GAMEPAD_LSTICK_RIGHT
+  action: "gp_right"
+}
+gamepad_trigger {
+  input: GAMEPAD_LSTICK_UP
+  action: "gp_up"
+}
+gamepad_trigger {
+  input: GAMEPAD_LSTICK_DOWN
+  action: "gp_down"
+}
+gamepad_trigger {
+  input: GAMEPAD_RTRIGGER
+  action: "gp_fire"
+}
+gamepad_trigger {
+  input: GAMEPAD_LTRIGGER
+  action: "gp_boost"
+}
+gamepad_trigger {
+  input: GAMEPAD_LSHOULDER
+  action: "gp_brake"
+}
+gamepad_trigger {
+  input: GAMEPAD_RPAD_DOWN
+  action: "dash"
+}
+gamepad_trigger {
+  input: GAMEPAD_RPAD_LEFT
+  action: "mod1"
+}
+gamepad_trigger {
+  input: GAMEPAD_RPAD_RIGHT
+  action: "mod2"
+}
+gamepad_trigger {
+  input: GAMEPAD_RPAD_UP
+  action: "missile"
+}
+gamepad_trigger {
+  input: GAMEPAD_RSHOULDER
+  action: "missile"
+}
+gamepad_trigger {
+  input: GAMEPAD_START
+  action: "pause"
+}
+gamepad_trigger {
+  input: GAMEPAD_BACK
+  action: "scoreboard"
 }

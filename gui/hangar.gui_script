@@ -1,364 +1,827 @@
+-- Main menu: HUB / CAMPAIGN / SKIRMISH / HANGAR screens + SETTINGS overlay.
 local druid = require("druid.druid")
+local _
 local ui = require("gui.ui_helper")
 local ships_db = require("data.ships_db")
+local modules_db = require("data.modules_db")
+local campaign_db = require("data.campaign_db")
+local progression_db = require("data.progression_db")
 local i18n = require("modules.i18n")
 local progress = require("modules.progress")
 local audio = require("modules.audio")
 local poki = require("modules.poki")
 
-local M_UPGRADE_KEYS = { "hull", "weapon", "shield", "engine" }
-
-local M_STAT_SPECS = {
-    { stat_key = "hull",   node_key = "hull",   field = "max_hull" },
+local UPGRADE_KEYS = { "hull", "weapon", "shield", "engine" }
+local STAT_SPECS = {
+    { stat_key = "hull", node_key = "hull", field = "max_hull" },
     { stat_key = "shield", node_key = "shield", field = "max_shield" },
-    { stat_key = "dps",    node_key = "weapon", field = "dps" },
-    { stat_key = "speed",  node_key = "engine", field = "speed" },
+    { stat_key = "dps", node_key = "weapon", field = "dps" },
+    { stat_key = "speed", node_key = "engine", field = "speed" },
+}
+local MODE_COLOR = {
+    tutorial = ui.C_GOLD, hunt = ui.C_CORAL, race = ui.C_GOLD, tdm = ui.C_AQUA, domination = ui.C_AMBER,
+    survival = ui.C_GREEN, escort = ui.C_GREEN, ace = ui.C_PURPLE, boss = ui.C_CORAL,
 }
 
-local function compute_node_deltas(cid, u)
-    local owned_stats = ships_db.get_effective_stats(cid, u)
+local tmp_scale = vmath.vector3(1, 1, 1)
+
+local function fmt(key, a, b, c)
+    local ok, out = pcall(string.format, i18n.t(key), a or 0, b or 0, c or 0)
+    return ok and out or i18n.t(key)
+end
+
+local function toast(self, text, color)
+    self.toast_timer = 2.6
+    gui.set_text(self.toast, text)
+    gui.set_color(self.toast, color or ui.C_GOLD)
+    gui.set_enabled(self.toast_bg, true)
+end
+
+local function star_rule_text(rule)
+    if rule.type == "win" then return i18n.t("star_win") end
+    if rule.type == "deaths_max" and rule.v == 0 then return i18n.t("star_no_deaths") end
+    return fmt("star_" .. rule.type, rule.v)
+end
+
+-- ====================================================================== REFRESH
+local refresh
+
+local function refresh_topbar(self)
+    local s = progress.get()
+    gui.set_text(self.txt_title, i18n.t("game_title"))
+    gui.set_text(self.txt_level, fmt("level_short", s.level))
+    local need = progression_db.xp_for_level(s.level)
+    ui.set_bar(self.xp_fill, s.xp / need)
+    gui.set_text(self.txt_xp, string.format("%d / %d XP", s.xp, need))
+    gui.set_text(self.txt_credits, string.format("%d", s.credits))
+    gui.set_text(self.txt_parts, string.format("%d", s.parts))
+    gui.set_text(self.lbl_settings, i18n.t("settings"))
+end
+
+local function contract_text(c)
+    return fmt("contract_" .. c.id, c.target)
+end
+
+local function refresh_hub(self)
+    local s = progress.get()
+    local nm = progress.next_mission()
+    gui.set_text(self.hub.lbl_campaign, i18n.t("campaign"))
+    gui.set_text(self.hub.sub_campaign, fmt("stars_total", progress.total_stars(), campaign_db.TOTAL_STARS))
+    gui.set_text(self.hub.lbl_skirmish, i18n.t("skirmish"))
+    gui.set_text(self.hub.sub_skirmish, i18n.t("skirmish_sub"))
+    gui.set_text(self.hub.lbl_hangar, i18n.t("hangar"))
+    gui.set_text(self.hub.sub_hangar, i18n.t("ship_" .. s.selected) .. "  T" .. progress.get_player_tier(s.selected))
+    gui.set_text(self.hub.lbl_play, i18n.t("play") .. ":  " .. string.format("%d-%d  ", nm.sector, nm.index) .. i18n.t("m_" .. nm.id .. "_name"))
+    gui.set_text(self.hub.contracts_title, i18n.t("contracts"))
+    for i, row in ipairs(self.hub.contracts) do
+        local c = s.contracts[i]
+        if c then
+            gui.set_enabled(row.bg, true)
+            gui.set_text(row.txt, contract_text(c))
+            gui.set_text(row.prog, string.format("%d / %d", math.min(c.progress, c.target), c.target))
+            ui.set_bar(row.fill, c.progress / c.target)
+            gui.set_text(row.reward, string.format("+%d %s  +%d %s  +%d XP", c.credits, i18n.t("cr"), c.parts, i18n.t("parts"), c.xp))
+            local done = c.progress >= c.target
+            gui.set_enabled(row.btn_node, done)
+            gui.set_text(row.btn_lbl, i18n.t("claim"))
+            gui.set_color(row.fill, done and ui.C_GREEN or ui.C_AQUA)
+        else
+            gui.set_enabled(row.bg, false)
+        end
+    end
+    local st = s.stats
+    gui.set_text(self.hub.stats, fmt("pilot_stats", st.matches, st.wins, st.kills))
+end
+
+local function refresh_campaign(self)
+    local sector = self.sel_sector
+    for i, tab in ipairs(self.camp.tabs) do
+        local unlocked = progress.sector_unlocked(i)
+        local sec = campaign_db.SECTORS[i]
+        gui.set_color(tab.node, (i == sector) and ui.C_AQUA or (unlocked and ui.C_ELEV or ui.C_CARD))
+        local label = i18n.t(sec.key)
+        if not unlocked then label = label .. "  " .. fmt("needs_stars", sec.stars_required) end
+        gui.set_text(tab.lbl, label)
+    end
+    local list = campaign_db.sector_missions(sector)
+    for i, card in ipairs(self.camp.cards) do
+        local m = list[i]
+        if m then
+            gui.set_enabled(card.node, true)
+            local unlocked = progress.mission_unlocked(m.id)
+            local stars = progress.get_stars(m.id)
+            card.mission = m.id
+            gui.set_text(card.idx, string.format("%d-%d", m.sector, m.index))
+            gui.set_text(card.name, i18n.t("m_" .. m.id .. "_name"))
+            gui.set_text(card.mode, i18n.t("mode_" .. m.mode))
+            gui.set_color(card.mode, MODE_COLOR[m.mode] or ui.C_DIM)
+            for k = 1, 3 do
+                gui.set_enabled(card.stars[k], unlocked)
+                gui.set_color(card.stars[k], (k <= stars) and ui.C_GOLD or ui.C_DARK)
+            end
+            gui.set_enabled(card.lock, not unlocked)
+            local sel = (self.sel_mission == m.id)
+            gui.set_color(card.node, sel and ui.C_ELEV or (unlocked and ui.C_CARD or vmath.vector4(0.08, 0.1, 0.15, 0.9)))
+            gui.set_color(card.name, unlocked and ui.C_WHITE or ui.C_DIM)
+        else
+            gui.set_enabled(card.node, false)
+        end
+    end
+    -- Detail
+    local m = campaign_db.get(self.sel_mission)
+    local d = self.camp.detail
+    if not m then return end
+    local unlocked = progress.mission_unlocked(m.id)
+    gui.set_text(d.name, string.format("%d-%d  ", m.sector, m.index) .. i18n.t("m_" .. m.id .. "_name"))
+    gui.set_text(d.desc, i18n.t("m_" .. m.id .. "_desc"))
+    gui.set_text(d.mode, i18n.t("mode_" .. m.mode) .. "  •  " .. i18n.t("mode_" .. m.mode .. "_desc"))
+    gui.set_color(d.mode, MODE_COLOR[m.mode] or ui.C_DIM)
+    gui.set_text(d.threat, fmt("threat", m.difficulty))
+    local my_tier = progress.get_player_tier(progress.get().selected)
+    gui.set_text(d.tier, fmt("rec_tier", m.bot_tier, my_tier))
+    gui.set_color(d.tier, (my_tier >= m.bot_tier) and ui.C_GREEN or ui.C_CORAL)
+    local rules = { { type = "win" }, m.stars[1], m.stars[2] }
+    local got = progress.get_stars(m.id)
+    for i = 1, 3 do
+        gui.set_text(d.star_lbl[i], star_rule_text(rules[i]))
+        gui.set_color(d.star_ic[i], (i <= got) and ui.C_GOLD or ui.C_DARK)
+    end
+    local rw = m.reward
+    local first = (got == 0)
+    gui.set_text(d.reward, fmt("reward_line", rw.credits * (first and 2 or 1), rw.parts + (first and 1 or 0), rw.xp)
+        .. (first and ("  " .. i18n.t("first_clear")) or ""))
+    local bt = progress.get().campaign.best_time[m.id]
+    gui.set_text(d.best, bt and fmt("best_time", math.floor(bt / 60), math.floor(bt % 60)) or "")
+    gui.set_text(d.lbl_play, unlocked and i18n.t("launch") or i18n.t("locked_mission"))
+    gui.set_color(d.btn_play, unlocked and ui.C_GREEN or ui.C_CARD)
+    gui.set_text(self.camp.lbl_back, i18n.t("back"))
+end
+
+local function refresh_skirmish(self)
+    local s = progress.get()
+    for i, card in ipairs(self.skirm.cards) do
+        local p = campaign_db.SKIRMISH[i]
+        local unlocked = s.level >= p.unlock_level
+        gui.set_text(card.title, i18n.t("mode_" .. p.mode))
+        gui.set_color(card.title, MODE_COLOR[p.mode] or ui.C_WHITE)
+        gui.set_text(card.desc, i18n.t("sk_" .. p.mode .. "_desc"))
+        gui.set_text(card.lbl, unlocked and i18n.t("play") or fmt("unlock_level", p.unlock_level))
+        gui.set_color(card.btn, unlocked and ui.C_GREEN or ui.C_CARD)
+        gui.set_enabled(card.lock, not unlocked)
+    end
+    gui.set_text(self.skirm.title, i18n.t("skirmish"))
+    gui.set_text(self.skirm.info, fmt("skirmish_info", math.max(1, math.min(9, 1 + math.floor(s.level / 2)))))
+    gui.set_text(self.skirm.lbl_back, i18n.t("back"))
+end
+
+local function compute_deltas(sid, u)
+    local owned = ships_db.get_effective_stats(sid, u)
     local deltas = {}
-    for _, spec in ipairs(M_STAT_SPECS) do
+    for _, spec in ipairs(STAT_SPECS) do
         local lv = u[spec.node_key] or 1
         if lv < 5 then
-            local next_u = {
-                hull = u.hull,
-                weapon = u.weapon,
-                shield = u.shield,
-                engine = u.engine,
-            }
-            next_u[spec.node_key] = lv + 1
-            local next_stats = ships_db.get_effective_stats(cid, next_u)
-            deltas[spec.node_key] = math.floor(next_stats[spec.field] + 0.5) - math.floor(owned_stats[spec.field] + 0.5)
+            local nu = { hull = u.hull, weapon = u.weapon, shield = u.shield, engine = u.engine }
+            nu[spec.node_key] = lv + 1
+            local ns = ships_db.get_effective_stats(sid, nu)
+            deltas[spec.node_key] = math.floor(ns[spec.field] + 0.5) - math.floor(owned[spec.field] + 0.5)
         else
             deltas[spec.node_key] = 0
         end
     end
-    return owned_stats, deltas
+    return owned, deltas
 end
 
 local function refresh_hangar(self)
     local s = progress.get()
-    local cid = s.selected_class
-    local u = s.upgrades[cid]
-    local stats = ships_db.get_effective_stats(cid, progress.get_player_upgrades(cid))
-    local owned_stats, deltas = compute_node_deltas(cid, u)
-
-    if self.preview_cosmetic then
-        local pk = self.preview_cosmetic
-        local already = (pk.kind == "skin" and s.unlocked_skins[pk.id]) or (pk.kind == "trail" and s.unlocked_trails[pk.id])
-        if already then
-            self.preview_cosmetic = nil
-        end
-    end
-
-    gui.set_text(self.txt_title, i18n.t("game_title"))
-    gui.set_text(self.txt_wallet, string.format("%s: %d   •   %s: %d", i18n.t("credits"), s.credits, i18n.t("parts"), s.parts or 0))
-    gui.set_text(self.lbl_lang, i18n.t("language") .. ": " .. string.upper(i18n.get_language()))
-    gui.set_text(self.lbl_sound, i18n.t("sound") .. ": " .. i18n.t(audio.is_muted() and "off" or "on"))
-
-    -- Class buttons
-    for _, key in ipairs(ships_db.CLASS_ORDER) do
-        local c = self.class_cards[key]
-        local selected = (key == cid)
-        gui.set_color(c.node, selected and ui.C_AQUA or ui.C_CARD)
-        gui.set_text(c.lbl_name, i18n.t("class_" .. key))
-        gui.set_text(c.lbl_role, i18n.t("role_" .. key))
-    end
-
-    gui.set_text(self.txt_ship_tier, string.format("%s  T%d", i18n.t("class_" .. cid), stats.tier))
-
-    -- Numeric Stats Card (Hull, Shield, DPS, Speed + upgrade gain)
-    for idx, spec in ipairs(M_STAT_SPECS) do
-        local cell = self.stat_cells[idx]
-        local cur_val = math.floor(stats[spec.field] + 0.5)
-        local own_val = math.floor(owned_stats[spec.field] + 0.5)
-        local delta = deltas[spec.node_key] or 0
-        local lv = u[spec.node_key] or 1
-        gui.set_text(cell.lbl_title, i18n.t(spec.stat_key))
-        gui.set_text(cell.lbl_val, tostring(cur_val))
-        gui.set_color(cell.lbl_val, (s.test_drive_active and cur_val > own_val) and ui.C_GOLD or ui.C_WHITE)
-        if lv >= 5 then
-            gui.set_text(cell.lbl_gain, i18n.t("max_lv"))
-            gui.set_color(cell.lbl_gain, ui.C_DIM)
+    local view = self.view_ship or s.selected
+    local def = ships_db.get(view)
+    local owned = s.owned[view]
+    -- Ship list
+    for i, card in ipairs(self.hg.ships) do
+        local sid = ships_db.PLAYER_SHIPS[i]
+        local st, price, lvl = progress.ship_status(sid)
+        local d = ships_db.get(sid)
+        gui.set_text(card.name, i18n.t("ship_" .. sid))
+        gui.set_text(card.role, i18n.t("class_" .. d.role))
+        local status
+        if st == "owned" then
+            status = (s.selected == sid) and i18n.t("equipped") or ("T" .. progress.get_player_tier(sid))
+        elseif st == "level" then
+            status = fmt("unlock_level", lvl)
         else
-            gui.set_text(cell.lbl_gain, "+" .. tostring(delta))
-            gui.set_color(cell.lbl_gain, ui.C_GREEN)
+            status = string.format("%d %s", price, i18n.t("cr"))
         end
+        gui.set_text(card.status, status)
+        gui.set_color(card.status, (st == "owned") and ui.C_GREEN or ((st == "buy" and s.credits >= price) and ui.C_GOLD or ui.C_DIM))
+        gui.set_color(card.node, (view == sid) and ui.C_ELEV or ui.C_CARD)
+        gui.set_enabled(card.lock, st == "level")
     end
+    -- Stats card (owned upgrades or T1 preview)
+    local u = owned and progress.get_upgrades(view) or ships_db.uniform_upgrades(1)
+    local stats = ships_db.get_effective_stats(view, owned and progress.get_combat_upgrades(view) or u)
+    local own_stats, deltas = compute_deltas(view, u)
+    gui.set_text(self.hg.ship_title, i18n.t("ship_" .. view) .. "  T" .. stats.tier)
+    gui.set_text(self.hg.ship_role, i18n.t("role_" .. view))
+    for idx, spec in ipairs(STAT_SPECS) do
+        local cell = self.hg.stat_cells[idx]
+        local cur = math.floor(stats[spec.field] + 0.5)
+        gui.set_text(cell.title, i18n.t(spec.stat_key))
+        gui.set_text(cell.val, tostring(cur))
+        gui.set_color(cell.val, (s.test_drive_active and cur > math.floor(own_stats[spec.field] + 0.5)) and ui.C_GOLD or ui.C_WHITE)
+    end
+    -- Buy / select
+    local st, price, lvl = progress.ship_status(view)
+    if st == "owned" then
+        gui.set_text(self.hg.lbl_action, (s.selected == view) and i18n.t("equipped") or i18n.t("select"))
+        gui.set_color(self.hg.btn_action, (s.selected == view) and ui.C_CARD or ui.C_GREEN)
+    elseif st == "level" then
+        gui.set_text(self.hg.lbl_action, fmt("unlock_level", lvl))
+        gui.set_color(self.hg.btn_action, ui.C_CARD)
+    else
+        gui.set_text(self.hg.lbl_action, fmt("buy_for", price))
+        gui.set_color(self.hg.btn_action, (s.credits >= price) and ui.C_GOLD or ui.C_CARD)
+    end
+    gui.set_text(self.hg.lbl_test, s.test_drive_active and i18n.t("test_drive_active") or i18n.t("test_drive"))
+    gui.set_color(self.hg.btn_test, s.test_drive_active and ui.C_GOLD or ui.C_AMBER)
+    gui.set_enabled(self.hg.btn_test, owned)
 
-    -- Upgrade rows
-    for _, node_key in ipairs(M_UPGRADE_KEYS) do
-        local row = self.upg_rows[node_key]
-        local lv = u[node_key]
-        local can, credits_cost, parts_cost = progress.can_upgrade(cid, node_key)
-        local delta = deltas[node_key] or 0
-        gui.set_text(row.lbl_name, string.format("%s  T%d/5", i18n.t(node_key), lv))
-        gui.set_text(row.lbl_delta, (lv < 5 and delta > 0) and ("+" .. tostring(delta)) or "")
-        gui.set_scale(row.fill, vmath.vector3(lv / 5.0, 1, 1))
-        if lv >= 5 then
-            gui.set_text(row.lbl_btn, i18n.t("max_lv"))
-            gui.set_scale(row.lbl_btn, vmath.vector3(0.46, 0.46, 1))
-            gui.set_color(row.btn_node, ui.C_CARD)
-        elseif parts_cost > 0 then
-            gui.set_text(row.lbl_btn, string.format("%d\n+%d %s", credits_cost, parts_cost, i18n.t("parts")))
-            gui.set_scale(row.lbl_btn, vmath.vector3(0.34, 0.34, 1))
-            gui.set_color(row.btn_node, can and ui.C_GREEN or ui.C_ELEV)
+    -- Tabs
+    for i, t in ipairs(self.hg.tabs) do
+        gui.set_color(t.node, (self.hg_tab == i) and ui.C_AQUA or ui.C_ELEV)
+        gui.set_text(t.lbl, i18n.t(({ "tab_upgrades", "tab_modules", "tab_style" })[i]))
+    end
+    gui.set_enabled(self.hg.pane_upg, self.hg_tab == 1)
+    gui.set_enabled(self.hg.pane_mod, self.hg_tab == 2)
+    gui.set_enabled(self.hg.pane_style, self.hg_tab == 3)
+
+    -- Upgrades
+    for _, key in ipairs(UPGRADE_KEYS) do
+        local row = self.hg.upg[key]
+        local lv = u[key]
+        local can, cc, pc = progress.can_upgrade(view, key)
+        local delta = deltas[key] or 0
+        gui.set_text(row.name, string.format("%s  T%d/5", i18n.t(key), lv))
+        gui.set_text(row.delta, (lv < 5 and delta > 0) and ("+" .. delta .. " " .. i18n.t(STAT_SPECS[({ hull = 1, shield = 2, weapon = 3, engine = 4 })[key]].stat_key)) or "")
+        tmp_scale.x, tmp_scale.y = lv / 5, 1
+        gui.set_scale(row.fill, tmp_scale)
+        if not owned then
+            gui.set_text(row.lbl, "-")
+            gui.set_color(row.btn, ui.C_CARD)
+        elseif lv >= 5 then
+            gui.set_text(row.lbl, i18n.t("max_lv"))
+            gui.set_color(row.btn, ui.C_CARD)
+        elseif pc > 0 then
+            gui.set_text(row.lbl, string.format("%d %s\n+%d %s", cc, i18n.t("cr"), pc, i18n.t("parts")))
+            gui.set_color(row.btn, can and ui.C_GREEN or ui.C_ELEV)
         else
-            gui.set_text(row.lbl_btn, tostring(credits_cost))
-            gui.set_scale(row.lbl_btn, vmath.vector3(0.50, 0.50, 1))
-            gui.set_color(row.btn_node, can and ui.C_GREEN or ui.C_ELEV)
+            gui.set_text(row.lbl, string.format("%d %s", cc, i18n.t("cr")))
+            gui.set_color(row.btn, can and ui.C_GREEN or ui.C_ELEV)
         end
     end
 
-    -- Skins & Trails
-    gui.set_text(self.txt_skins_hdr, i18n.t("skins"))
-    gui.set_text(self.txt_trails_hdr, i18n.t("trails"))
+    -- Modules
+    local lo = progress.get_loadout(view)
+    for i, card in ipairs(self.hg.mods) do
+        local mid = def.modules[i]
+        local cfg = modules_db.MODULES[mid]
+        local unlocked = progress.module_unlocked(mid)
+        gui.set_text(card.name, i18n.t("mod_" .. mid))
+        gui.set_color(card.name, vmath.vector4(cfg.color[1], cfg.color[2], cfg.color[3], 1))
+        gui.set_text(card.desc, i18n.t("mdesc_" .. mid))
+        gui.set_text(card.cd, fmt("cooldown_s", cfg.cooldown))
+        local in1, in2 = lo[1] == mid, lo[2] == mid
+        gui.set_color(card.node, (in1 or in2) and ui.C_ELEV or ui.C_CARD)
+        gui.set_enabled(card.b1, unlocked and owned)
+        gui.set_enabled(card.b2, unlocked and owned)
+        gui.set_color(card.b1, in1 and ui.C_AQUA or ui.C_BG)
+        gui.set_color(card.b2, in2 and ui.C_AQUA or ui.C_BG)
+        gui.set_text(card.lock, unlocked and "" or fmt("unlock_level", cfg.unlock_level))
+    end
+    gui.set_text(self.hg.mod_hint, i18n.t("modules_hint"))
+
+    -- Style
     local pk = self.preview_cosmetic
     for i = 1, 24 do
-        local sw = self.skin_swatches[i]
-        local unlocked = s.unlocked_skins[i]
+        local sw = self.hg.skins[i]
         local c = ships_db.SKINS[i].preview
-        local is_preview = pk and pk.kind == "skin" and pk.id == i
-        local alpha = unlocked and 1.0 or (is_preview and 0.72 or 0.25)
-        gui.set_color(sw.fill, vmath.vector4(c[1], c[2], c[3], alpha))
-        local border_col = (s.equipped_skin == i) and ui.C_WHITE or (is_preview and ui.C_AMBER or ui.C_BG)
-        gui.set_color(sw.border, border_col)
+        local unl = s.unlocked_skins[i]
+        local is_prev = pk and pk.kind == "skin" and pk.id == i
+        gui.set_color(sw.fill, vmath.vector4(c[1], c[2], c[3], unl and 1.0 or (is_prev and 0.75 or 0.25)))
+        gui.set_color(sw.border, (s.equipped_skin == i) and ui.C_WHITE or (is_prev and ui.C_AMBER or ui.C_BG))
     end
     for i = 1, 12 do
-        local sw = self.trail_swatches[i]
-        local unlocked = s.unlocked_trails[i]
+        local sw = self.hg.trails[i]
         local c = ships_db.TRAILS[i].color
-        local is_preview = pk and pk.kind == "trail" and pk.id == i
-        local alpha = unlocked and 1.0 or (is_preview and 0.72 or 0.25)
-        gui.set_color(sw.fill, vmath.vector4(c[1], c[2], c[3], alpha))
-        local border_col = (s.equipped_trail == i) and ui.C_WHITE or (is_preview and ui.C_AMBER or ui.C_BG)
-        gui.set_color(sw.border, border_col)
+        local unl = s.unlocked_trails[i]
+        local is_prev = pk and pk.kind == "trail" and pk.id == i
+        gui.set_color(sw.fill, vmath.vector4(c[1], c[2], c[3], unl and 1.0 or (is_prev and 0.75 or 0.25)))
+        gui.set_color(sw.border, (s.equipped_trail == i) and ui.C_WHITE or (is_prev and ui.C_AMBER or ui.C_BG))
     end
-
-    -- Parts Craft Buttons
+    gui.set_text(self.hg.skins_hdr, i18n.t("skins"))
+    gui.set_text(self.hg.trails_hdr, i18n.t("trails"))
     local can_rand, rand_cost, has_locked = progress.can_craft_random()
-    if has_locked then
-        gui.set_text(self.lbl_craft_rand, string.format("%s\n%d %s", i18n.t("craft_random"), rand_cost, i18n.t("parts")))
-        gui.set_scale(self.lbl_craft_rand, vmath.vector3(0.34, 0.34, 1))
-        gui.set_color(self.node_craft_rand, can_rand and ui.C_AQUA or ui.C_ELEV)
-    else
-        gui.set_text(self.lbl_craft_rand, i18n.t("all_unlocked"))
-        gui.set_scale(self.lbl_craft_rand, vmath.vector3(0.36, 0.36, 1))
-        gui.set_color(self.node_craft_rand, ui.C_CARD)
-    end
-
+    gui.set_text(self.hg.lbl_craft_rand, has_locked and fmt("craft_random_cost", rand_cost) or i18n.t("all_unlocked"))
+    gui.set_color(self.hg.btn_craft_rand, can_rand and ui.C_AQUA or ui.C_ELEV)
     if pk then
-        local can_sel, sel_cost = progress.can_craft_cosmetic(pk.kind, pk.id)
-        gui.set_text(self.lbl_craft_sel, string.format("%s\n%d %s", i18n.t("craft_selected"), sel_cost, i18n.t("parts")))
-        gui.set_scale(self.lbl_craft_sel, vmath.vector3(0.34, 0.34, 1))
-        gui.set_color(self.node_craft_sel, can_sel and ui.C_GREEN or ui.C_ELEV)
+        local can_sel, cost = progress.can_craft_cosmetic(pk.kind, pk.id)
+        gui.set_text(self.hg.lbl_craft_sel, fmt("craft_selected_cost", cost))
+        gui.set_color(self.hg.btn_craft_sel, can_sel and ui.C_GREEN or ui.C_ELEV)
     else
-        gui.set_text(self.lbl_craft_sel, has_locked and i18n.t("select_locked") or i18n.t("all_unlocked"))
-        gui.set_scale(self.lbl_craft_sel, vmath.vector3(0.35, 0.35, 1))
-        gui.set_color(self.node_craft_sel, ui.C_CARD)
+        gui.set_text(self.hg.lbl_craft_sel, has_locked and i18n.t("select_locked") or i18n.t("all_unlocked"))
+        gui.set_color(self.hg.btn_craft_sel, ui.C_CARD)
     end
+    gui.set_text(self.hg.lbl_rand_ad, i18n.t("random_skin"))
+    gui.set_text(self.hg.lbl_back, i18n.t("back"))
 
-    gui.set_text(self.lbl_rand_skin, i18n.t("random_skin"))
-    gui.set_text(self.lbl_test_drive, s.test_drive_active and i18n.t("test_drive_active") or i18n.t("test_drive"))
-    gui.set_color(self.node_test_drive, s.test_drive_active and ui.C_GOLD or ui.C_AMBER)
+    local skin = (pk and pk.kind == "skin") and pk.id or s.equipped_skin
+    local trail = (pk and pk.kind == "trail") and pk.id or s.equipped_trail
+    msg.post("/controller#main", "refresh_hangar_preview", { ship_id = view, skin_id = skin, trail_id = trail })
+end
 
-    local next_num = s.match_count + 1
-    local mode_hint = (next_num % 5 == 0) and i18n.t("mode_boss") or ((next_num % 2 == 0) and i18n.t("mode_dom") or i18n.t("mode_tdm"))
-    gui.set_text(self.lbl_battle, i18n.t("battle") .. " • " .. mode_hint)
+local function refresh_settings(self)
+    local s = progress.settings()
+    gui.set_text(self.set.title, i18n.t("settings"))
+    gui.set_text(self.set.lbl_sound, i18n.t("sound") .. ": " .. i18n.t(s.muted and "off" or "on"))
+    gui.set_text(self.set.lbl_af, i18n.t("autofire") .. ": " .. i18n.t(s.autofire and "on" or "off"))
+    gui.set_text(self.set.lbl_sens, i18n.t("sensitivity") .. ": " .. string.format("%.2fx", s.sensitivity or 1))
+    gui.set_text(self.set.lbl_inv, i18n.t("invert_y") .. ": " .. i18n.t(s.invert_y and "on" or "off"))
+    gui.set_text(self.set.lbl_lang, i18n.t("language") .. ": " .. string.upper(i18n.get_language()))
+    gui.set_text(self.set.lbl_close, i18n.t("close"))
+    gui.set_text(self.set.ctl_title, i18n.t("controls"))
+    gui.set_text(self.set.ctl, i18n.t("controls_kbm") .. "\n\n" .. i18n.t("controls_touch_short"))
+end
 
-    local preview_skin = (pk and pk.kind == "skin") and pk.id or s.equipped_skin
-    local preview_trail = (pk and pk.kind == "trail") and pk.id or s.equipped_trail
-    msg.post("/controller#main", "refresh_hangar_preview", { skin_id = preview_skin, trail_id = preview_trail })
+refresh = function(self)
+    refresh_topbar(self)
+    gui.set_enabled(self.hub.root, self.screen == "hub")
+    gui.set_enabled(self.camp.root, self.screen == "campaign")
+    gui.set_enabled(self.skirm.root, self.screen == "skirmish")
+    gui.set_enabled(self.hg.root, self.screen == "hangar")
+    gui.set_enabled(self.set.root, self.settings_open)
+    self.set.blocker:set_enabled(self.settings_open)
+    if self.screen == "hub" then refresh_hub(self)
+    elseif self.screen == "campaign" then refresh_campaign(self)
+    elseif self.screen == "skirmish" then refresh_skirmish(self)
+    elseif self.screen == "hangar" then refresh_hangar(self) end
+    if self.settings_open then refresh_settings(self) end
+end
+
+local function go_screen(self, name)
+    self.screen = name
+    self.preview_cosmetic = nil
+    if name == "hangar" then
+        self.view_ship = progress.get().selected
+        msg.post("/controller#main", "hangar_framing", { x = 1.2, dist = 12 })
+    elseif name == "hub" then
+        msg.post("/controller#main", "hangar_framing", { x = 0, dist = 14 })
+        msg.post("/controller#main", "refresh_hangar_preview", {})
+    else
+        msg.post("/controller#main", "refresh_hangar_preview", { hidden = true })
+    end
+    if name == "campaign" then
+        local nm = progress.next_mission()
+        self.sel_sector = nm.sector
+        self.sel_mission = nm.id
+    end
+    refresh(self)
+end
+
+-- ======================================================================= BUILD
+local function build_topbar(self)
+    local top = ui.box(self.root, 960, 1032, 1880, 80, ui.C_BG, "panel_rounded")
+    self.txt_title = ui.text(top, -900, 0, "", 0.66, ui.C_AQUA, gui.PIVOT_W)
+    local lvl_bg = ui.box(top, -330, 0, 120, 52, ui.C_GOLD, "panel_rounded")
+    self.txt_level = ui.text(lvl_bg, 0, 0, "", 0.46, ui.C_BG2)
+    local _, xf = ui.bar(top, -100, 6, 300, 14, ui.C_GOLD)
+    self.xp_fill = xf
+    self.txt_xp = ui.text(top, -100, -18, "", 0.28, ui.C_DIM)
+    local cr_ic = ui.box(top, 210, 0, 26, 26, ui.C_GOLD, "dot")
+    self.txt_credits = ui.text(cr_ic, 24, 0, "", 0.52, ui.C_GOLD, gui.PIVOT_W)
+    local pt_ic = ui.box(top, 430, 0, 24, 24, ui.C_PURPLE, "star")
+    self.txt_parts = ui.text(pt_ic, 24, 0, "", 0.52, ui.C_PURPLE, gui.PIVOT_W)
+    _, _, self.lbl_settings = ui.button(self.druid, top, 790, 0, 250, 56, "", ui.C_ELEV, "panel_rounded", function()
+        self.settings_open = true
+        refresh(self)
+    end, 0.42)
+    self.toast_bg = ui.box(self.root, 960, 950, 900, 60, ui.C_BG2, "panel_rounded")
+    self.toast = ui.text(self.toast_bg, 0, 0, "", 0.48, ui.C_GOLD)
+    gui.set_enabled(self.toast_bg, false)
+end
+
+local function big_button(self, parent, x, y, w, h, color, fn)
+    local _, node, lbl = ui.button(self.druid, parent, x, y, w, h, "", color, "panel_rounded", fn, 0.62)
+    gui.set_position(lbl, vmath.vector3(-w * 0.5 + 34, 14, 0))
+    gui.set_pivot(lbl, gui.PIVOT_W)
+    local sub = ui.text(node, -w * 0.5 + 34, -24, "", 0.34, ui.C_DIM, gui.PIVOT_W)
+    return node, lbl, sub
+end
+
+local function build_hub(self)
+    local h = {}
+    h.root = ui.box(self.root, 0, 0, 0, 0, vmath.vector4(0, 0, 0, 0))
+    _, h.lbl_campaign, h.sub_campaign = big_button(self, h.root, 330, 780, 540, 118, ui.C_CARD, function() go_screen(self, "campaign") end)
+    _, h.lbl_skirmish, h.sub_skirmish = big_button(self, h.root, 330, 640, 540, 118, ui.C_CARD, function() go_screen(self, "skirmish") end)
+    _, h.lbl_hangar, h.sub_hangar = big_button(self, h.root, 330, 500, 540, 118, ui.C_CARD, function() go_screen(self, "hangar") end)
+    _, _, h.lbl_play = ui.button(self.druid, h.root, 960, 110, 760, 110, "", ui.C_GREEN, "panel_rounded", function()
+        msg.post("/controller#main", "start_mission", { id = progress.next_mission().id })
+    end, 0.6)
+    h.stats = ui.text(h.root, 70, 300, "", 0.34, ui.C_DIM, gui.PIVOT_W)
+
+    local cp = ui.box(h.root, 1590, 640, 580, 560, ui.C_BG, "panel_rounded")
+    h.contracts_title = ui.text(cp, -260, 245, "", 0.52, ui.C_GOLD, gui.PIVOT_W)
+    h.contracts = {}
+    for i = 1, 3 do
+        local y = 140 - (i - 1) * 160
+        local bg = ui.box(cp, 0, y, 540, 145, ui.C_CARD, "panel_rounded")
+        local txt = ui.para(bg, -250, 58, "", 0.36, ui.C_WHITE, 360)
+        local prog = ui.text(bg, 250, 52, "", 0.36, ui.C_DIM, gui.PIVOT_E)
+        local _, fill = ui.bar(bg, -45, -12, 410, 10, ui.C_AQUA)
+        local reward = ui.text(bg, -250, -44, "", 0.3, ui.C_GOLD, gui.PIVOT_W)
+        local idx = i
+        local _, bn, bl = ui.button(self.druid, bg, 200, -30, 120, 54, "", ui.C_GREEN, "panel_rounded", function()
+            local c, levels = progress.claim_contract(idx)
+            if c then
+                audio.play("coin", 0.8)
+                toast(self, fmt("contract_claimed", c.credits, c.parts), ui.C_GOLD)
+                if levels and #levels > 0 then
+                    audio.play("levelup", 0.7)
+                    toast(self, fmt("level_up", levels[#levels]), ui.C_GREEN)
+                end
+                refresh(self)
+            end
+        end, 0.36)
+        h.contracts[i] = { bg = bg, txt = txt, prog = prog, fill = fill, reward = reward, btn_node = bn, btn_lbl = bl }
+    end
+    self.hub = h
+end
+
+local function build_campaign(self)
+    local c = {}
+    c.root = ui.box(self.root, 0, 0, 0, 0, vmath.vector4(0, 0, 0, 0))
+    c.tabs = {}
+    for i = 1, 4 do
+        local sector = i
+        local _, n, l = ui.button(self.druid, c.root, 255 + (i - 1) * 470, 945, 450, 64, "", ui.C_ELEV, "panel_rounded", function()
+            if progress.sector_unlocked(sector) then
+                self.sel_sector = sector
+                local list = campaign_db.sector_missions(sector)
+                self.sel_mission = list[1].id
+                for _, m in ipairs(list) do
+                    if progress.mission_unlocked(m.id) then self.sel_mission = m.id end
+                end
+                refresh(self)
+            else
+                audio.play("error", 0.4)
+            end
+        end, 0.38)
+        c.tabs[i] = { node = n, lbl = l }
+    end
+    c.cards = {}
+    for i = 1, 6 do
+        local y = 830 - (i - 1) * 118
+        local card = {}
+        local slot = i
+        local _, n = ui.button(self.druid, c.root, 400, y, 660, 106, "", ui.C_CARD, "panel_rounded", function()
+            if card.mission then
+                self.sel_mission = card.mission
+                refresh(self)
+            end
+        end, 0.1)
+        card.node = n
+        card.idx = ui.text(n, -300, 0, "", 0.5, ui.C_DIM, gui.PIVOT_W)
+        card.name = ui.text(n, -200, 16, "", 0.44, ui.C_WHITE, gui.PIVOT_W)
+        card.mode = ui.text(n, -200, -22, "", 0.32, ui.C_DIM, gui.PIVOT_W)
+        card.stars = {}
+        for k = 1, 3 do card.stars[k] = ui.box(n, 200 + (k - 1) * 40, 0, 36, 36, ui.C_DARK, "star") end
+        card.lock = ui.box(n, 280, 0, 40, 40, ui.C_DIM, "padlock")
+        c.cards[slot] = card
+    end
+    local d = {}
+    local dp = ui.box(c.root, 1360, 500, 900, 820, ui.C_BG, "panel_rounded")
+    d.name = ui.text(dp, -410, 370, "", 0.62, ui.C_WHITE, gui.PIVOT_W)
+    d.mode = ui.text(dp, -410, 320, "", 0.36, ui.C_AQUA, gui.PIVOT_W)
+    d.desc = ui.para(dp, -410, 290, "", 0.38, ui.C_DIM, 820)
+    d.threat = ui.text(dp, -410, 120, "", 0.38, ui.C_CORAL, gui.PIVOT_W)
+    d.tier = ui.text(dp, -410, 80, "", 0.36, ui.C_GREEN, gui.PIVOT_W)
+    d.star_ic, d.star_lbl = {}, {}
+    for i = 1, 3 do
+        local y = 20 - (i - 1) * 52
+        d.star_ic[i] = ui.box(dp, -390, y, 40, 40, ui.C_DARK, "star")
+        d.star_lbl[i] = ui.text(dp, -355, y, "", 0.38, ui.C_WHITE, gui.PIVOT_W)
+    end
+    d.reward = ui.text(dp, -410, -150, "", 0.38, ui.C_GOLD, gui.PIVOT_W)
+    d.best = ui.text(dp, -410, -195, "", 0.34, ui.C_DIM, gui.PIVOT_W)
+    _, d.btn_play, d.lbl_play = ui.button(self.druid, dp, 0, -320, 480, 100, "", ui.C_GREEN, "panel_rounded", function()
+        if progress.mission_unlocked(self.sel_mission) then
+            msg.post("/controller#main", "start_mission", { id = self.sel_mission })
+        else
+            audio.play("error", 0.4)
+        end
+    end, 0.62)
+    c.detail = d
+    _, _, c.lbl_back = ui.button(self.druid, c.root, 180, 75, 280, 80, "", ui.C_ELEV, "panel_rounded", function() go_screen(self, "hub") end, 0.5)
+    self.camp = c
+end
+
+local function build_skirmish(self)
+    local k = {}
+    k.root = ui.box(self.root, 0, 0, 0, 0, vmath.vector4(0, 0, 0, 0))
+    k.title = ui.text(k.root, 960, 930, "", 0.8, ui.C_AQUA)
+    k.info = ui.text(k.root, 960, 870, "", 0.38, ui.C_DIM)
+    k.cards = {}
+    for i = 1, 4 do
+        local x = 300 + (i - 1) * 440
+        local card = {}
+        local bg = ui.box(k.root, x, 520, 410, 560, ui.C_BG, "panel_rounded")
+        card.title = ui.text(bg, 0, 230, "", 0.52, ui.C_WHITE)
+        card.desc = ui.para(bg, -180, 180, "", 0.36, ui.C_DIM, 360)
+        card.lock = ui.box(bg, 0, -110, 64, 64, ui.C_DIM, "padlock")
+        local preset = campaign_db.SKIRMISH[i]
+        _, card.btn, card.lbl = ui.button(self.druid, bg, 0, -220, 340, 84, "", ui.C_GREEN, "panel_rounded", function()
+            if progress.get().level >= preset.unlock_level then
+                msg.post("/controller#main", "start_skirmish", { id = preset.id })
+            else
+                audio.play("error", 0.4)
+            end
+        end, 0.5)
+        k.cards[i] = card
+    end
+    _, _, k.lbl_back = ui.button(self.druid, k.root, 180, 75, 280, 80, "", ui.C_ELEV, "panel_rounded", function() go_screen(self, "hub") end, 0.5)
+    self.skirm = k
 end
 
 local function build_hangar(self)
-    if self.root then gui.delete_node(self.root) end
-    if self.druid then self.druid:final() end
-    self.druid = druid.new(self)
-
-    self.root = ui.box(nil, 0, 0, 0, 0, vmath.vector4(0, 0, 0, 0))
-    gui.set_enabled(self.root, self.visible)
-
-    -- Top Bar
-    local top = ui.box(self.root, 960, 1024, 1860, 82, ui.C_BG, "panel_rounded")
-    self.txt_title = ui.text(top, -880, 0, "VOID CLASH 3D", 0.72, ui.C_AQUA, gui.PIVOT_W)
-    self.txt_wallet = ui.text(top, -120, 0, "", 0.60, ui.C_GOLD, gui.PIVOT_CENTER)
-    self.btn_lang, _, self.lbl_lang = ui.button(self.druid, top, 580, 0, 190, 56, "LANG", ui.C_ELEV, "panel_rounded", function()
-        local nxt = i18n.cycle_language()
-        progress.get().language = nxt
-        progress.save()
-        refresh_hangar(self)
-    end, 0.46)
-    self.btn_sound, _, self.lbl_sound = ui.button(self.druid, top, 800, 0, 210, 56, "SOUND", ui.C_ELEV, "panel_rounded", function()
-        local muted = not audio.is_muted()
-        audio.set_muted(muted)
-        progress.get().muted = muted
-        progress.save()
-        refresh_hangar(self)
-    end, 0.46)
-
-    -- Left Panel: Classes + T1-T5 Upgrades
-    local left = ui.box(self.root, 310, 510, 540, 870, ui.C_BG, "panel_rounded")
-    self.class_cards = {}
-    for idx, key in ipairs(ships_db.CLASS_ORDER) do
-        local y = 340 - (idx - 1) * 102
-        local btn, node, lbl = ui.button(self.druid, left, 0, y, 490, 88, "", ui.C_CARD, "panel_rounded", function()
-            progress.get().selected_class = key
-            progress.save()
-            refresh_hangar(self)
-        end, 0.56)
-        gui.set_position(lbl, vmath.vector3(-220, 16, 0))
-        gui.set_pivot(lbl, gui.PIVOT_W)
-        local role = ui.text(node, -220, -18, "", 0.36, ui.C_DIM, gui.PIVOT_W)
-        self.class_cards[key] = { btn = btn, node = node, lbl_name = lbl, lbl_role = role }
+    local g = {}
+    g.root = ui.box(self.root, 0, 0, 0, 0, vmath.vector4(0, 0, 0, 0))
+    -- Ship list
+    g.ships = {}
+    for i, sid in ipairs(ships_db.PLAYER_SHIPS) do
+        local y = 880 - (i - 1) * 112
+        local card = {}
+        local _, n = ui.button(self.druid, g.root, 245, y, 420, 100, "", ui.C_CARD, "panel_rounded", function()
+            self.view_ship = sid
+            self.preview_cosmetic = nil
+            refresh(self)
+        end, 0.1)
+        card.node = n
+        card.name = ui.text(n, -185, 16, "", 0.46, ui.C_WHITE, gui.PIVOT_W)
+        card.role = ui.text(n, -185, -22, "", 0.3, ui.C_DIM, gui.PIVOT_W)
+        card.status = ui.text(n, 190, 0, "", 0.36, ui.C_GREEN, gui.PIVOT_E)
+        card.lock = ui.box(n, 20, 0, 34, 34, ui.C_DIM, "padlock")
+        g.ships[i] = card
     end
-
-    self.upg_rows = {}
-    for idx, node_key in ipairs(M_UPGRADE_KEYS) do
-        local y = -10 - (idx - 1) * 96
-        local row_bg = ui.box(left, 0, y, 490, 82, ui.C_CARD, "panel_rounded")
-        local lbl_name = ui.text(row_bg, -225, 18, "", 0.44, ui.C_WHITE, gui.PIVOT_W)
-        local lbl_delta = ui.text(row_bg, 72, 18, "", 0.38, ui.C_GREEN, gui.PIVOT_E)
-        local bar_bg = ui.box(row_bg, -113, -16, 224, 14, ui.C_BG)
-        local fill = ui.box(bar_bg, -112, 0, 224, 14, ui.C_AQUA)
-        gui.set_pivot(fill, gui.PIVOT_W)
-        local _, btn_node, lbl_btn = ui.button(self.druid, row_bg, 158, 0, 150, 62, "150", ui.C_GREEN, "panel_rounded", function()
-            if progress.upgrade_node(progress.get().selected_class, node_key) then
-                refresh_hangar(self)
+    -- Centre: title, stats, action
+    g.ship_title = ui.text(g.root, 840, 900, "", 0.7, ui.C_WHITE)
+    g.ship_role = ui.text(g.root, 840, 850, "", 0.36, ui.C_DIM)
+    local sp = ui.box(g.root, 840, 260, 700, 100, ui.C_BG, "panel_rounded")
+    g.stat_cells = {}
+    for i = 1, 4 do
+        local cx = -262 + (i - 1) * 175
+        g.stat_cells[i] = {
+            title = ui.text(sp, cx, 24, "", 0.32, ui.C_DIM),
+            val = ui.text(sp, cx, -12, "", 0.56, ui.C_WHITE),
+        }
+    end
+    _, g.btn_action, g.lbl_action = ui.button(self.druid, g.root, 840, 140, 440, 90, "", ui.C_GREEN, "panel_rounded", function()
+        local sid = self.view_ship
+        local st, price = progress.ship_status(sid)
+        if st == "owned" then
+            progress.select_ship(sid)
+        elseif st == "buy" then
+            if progress.buy_ship(sid) then
+                audio.play("levelup", 0.6)
+                toast(self, fmt("ship_bought", i18n.t("ship_" .. sid)), ui.C_GREEN)
+            else
+                audio.play("error", 0.4)
+                toast(self, fmt("need_credits", price), ui.C_CORAL)
             end
-        end, 0.50)
-        self.upg_rows[node_key] = { lbl_name = lbl_name, lbl_delta = lbl_delta, fill = fill, btn_node = btn_node, lbl_btn = lbl_btn }
+        else
+            audio.play("error", 0.4)
+        end
+        refresh(self)
+    end, 0.5)
+    _, g.btn_test, g.lbl_test = ui.button(self.druid, g.root, 840, 55, 440, 60, "", ui.C_AMBER, "panel_rounded", function()
+        local s = progress.get()
+        if not s.test_drive_active then
+            poki.rewarded_break(function(ok)
+                if ok then
+                    s.test_drive_active = true
+                    refresh(self)
+                end
+            end)
+        end
+    end, 0.36)
+
+    -- Right panel with tabs
+    local rp = ui.box(g.root, 1550, 520, 680, 820, ui.C_BG, "panel_rounded")
+    g.tabs = {}
+    for i = 1, 3 do
+        local tab = i
+        local _, n, l = ui.button(self.druid, rp, -225 + (i - 1) * 225, 365, 215, 62, "", ui.C_ELEV, "panel_rounded", function()
+            self.hg_tab = tab
+            refresh(self)
+        end, 0.38)
+        g.tabs[i] = { node = n, lbl = l }
     end
-
-    -- Center Ship Tier Label above 3D Preview
-    self.txt_ship_tier = ui.text(self.root, 960, 890, "", 0.72, ui.C_WHITE)
-
-    -- Center Numeric Stats Card (Hull, Shield, DPS, Speed + upgrade delta)
-    self.stats_panel = ui.box(self.root, 960, 224, 720, 96, ui.C_BG, "panel_rounded")
-    self.stat_cells = {}
-    for idx = 1, 4 do
-        local cx = -264 + (idx - 1) * 176
-        local lbl_title = ui.text(self.stats_panel, cx, 26, "", 0.36, ui.C_DIM)
-        local lbl_val = ui.text(self.stats_panel, cx, -1, "0", 0.56, ui.C_WHITE)
-        local lbl_gain = ui.text(self.stats_panel, cx, -28, "", 0.34, ui.C_GREEN)
-        self.stat_cells[idx] = { lbl_title = lbl_title, lbl_val = lbl_val, lbl_gain = lbl_gain }
+    -- Upgrades pane
+    g.pane_upg = ui.box(rp, 0, 0, 0, 0, vmath.vector4(0, 0, 0, 0))
+    g.upg = {}
+    for i, key in ipairs(UPGRADE_KEYS) do
+        local y = 250 - (i - 1) * 140
+        local row = ui.box(g.pane_upg, 0, y, 630, 124, ui.C_CARD, "panel_rounded")
+        local r = {}
+        r.name = ui.text(row, -295, 30, "", 0.44, ui.C_WHITE, gui.PIVOT_W)
+        r.delta = ui.text(row, -295, -36, "", 0.32, ui.C_GREEN, gui.PIVOT_W)
+        ui.box(row, -130, -2, 330, 14, ui.C_BG)
+        r.fill = ui.box(row, -295, -2, 330, 14, ui.C_AQUA)
+        gui.set_pivot(r.fill, gui.PIVOT_W)
+        local node_key = key
+        _, r.btn, r.lbl = ui.button(self.druid, row, 215, 0, 180, 84, "", ui.C_GREEN, "panel_rounded", function()
+            local sid = self.view_ship
+            if progress.upgrade_node(sid, node_key) then
+                audio.play("coin", 0.7)
+            else
+                audio.play("error", 0.35)
+            end
+            refresh(self)
+        end, 0.36)
+        g.upg[key] = r
     end
-
-    -- Right Panel: 24 Skins + 12 Trails + Parts Crafting
-    local right = ui.box(self.root, 1630, 560, 500, 770, ui.C_BG, "panel_rounded")
-    self.txt_skins_hdr = ui.text(right, -220, 345, "SKINS", 0.52, ui.C_AQUA, gui.PIVOT_W)
-    self.skin_swatches = {}
+    -- Modules pane
+    g.pane_mod = ui.box(rp, 0, 0, 0, 0, vmath.vector4(0, 0, 0, 0))
+    g.mod_hint = ui.para(g.pane_mod, -300, 315, "", 0.3, ui.C_DIM, 600)
+    g.mods = {}
+    for i = 1, 3 do
+        local y = 175 - (i - 1) * 205
+        local card = {}
+        card.node = ui.box(g.pane_mod, 0, y, 630, 190, ui.C_CARD, "panel_rounded")
+        card.name = ui.text(card.node, -295, 66, "", 0.46, ui.C_WHITE, gui.PIVOT_W)
+        card.cd = ui.text(card.node, 120, 66, "", 0.3, ui.C_DIM, gui.PIVOT_E)
+        card.desc = ui.para(card.node, -295, 40, "", 0.3, ui.C_DIM, 430)
+        card.lock = ui.text(card.node, 220, 0, "", 0.34, ui.C_CORAL)
+        local idx = i
+        local function assign(slot)
+            local def = ships_db.get(self.view_ship)
+            if progress.set_loadout(self.view_ship, slot, def.modules[idx]) then
+                audio.play("ui_click", 0.6)
+            else
+                audio.play("error", 0.4)
+            end
+            refresh(self)
+        end
+        _, card.b1 = ui.button(self.druid, card.node, 220, 36, 140, 58, "M1", ui.C_BG, "panel_rounded", function() assign(1) end, 0.4)
+        _, card.b2 = ui.button(self.druid, card.node, 220, -36, 140, 58, "M2", ui.C_BG, "panel_rounded", function() assign(2) end, 0.4)
+        g.mods[i] = card
+    end
+    -- Style pane
+    g.pane_style = ui.box(rp, 0, 0, 0, 0, vmath.vector4(0, 0, 0, 0))
+    g.skins_hdr = ui.text(g.pane_style, -300, 300, "", 0.42, ui.C_AQUA, gui.PIVOT_W)
+    g.skins = {}
     for i = 1, 24 do
-        local col = (i - 1) % 6
-        local row = math.floor((i - 1) / 6)
-        local sx = -180 + col * 72
-        local sy = 285 - row * 66
-        local border = ui.box(right, sx, sy, 60, 54, ui.C_BG, "panel_rounded")
-        local fill = ui.box(border, 0, 0, 50, 44, ui.C_WHITE, "panel_rounded")
+        local col, row = (i - 1) % 8, math.floor((i - 1) / 8)
+        local border = ui.box(g.pane_style, -266 + col * 76, 245 - row * 66, 66, 58, ui.C_BG, "panel_rounded")
+        local fill = ui.box(border, 0, 0, 54, 46, ui.C_WHITE, "panel_rounded")
+        local id = i
         self.druid:new_button(border, function()
             local s = progress.get()
             audio.play("ui_click", 0.5)
-            if s.unlocked_skins[i] then
+            if s.unlocked_skins[id] then
                 self.preview_cosmetic = nil
-                s.equipped_skin = i
+                s.equipped_skin = id
                 progress.save()
             else
-                self.preview_cosmetic = { kind = "skin", id = i }
+                self.preview_cosmetic = { kind = "skin", id = id }
             end
-            refresh_hangar(self)
+            refresh(self)
         end)
-        self.skin_swatches[i] = { border = border, fill = fill }
+        g.skins[i] = { border = border, fill = fill }
     end
-
-    self.txt_trails_hdr = ui.text(right, -220, 16, "TRAILS", 0.52, ui.C_AQUA, gui.PIVOT_W)
-    self.trail_swatches = {}
+    g.trails_hdr = ui.text(g.pane_style, -300, 40, "", 0.42, ui.C_AQUA, gui.PIVOT_W)
+    g.trails = {}
     for i = 1, 12 do
-        local col = (i - 1) % 6
-        local row = math.floor((i - 1) / 6)
-        local sx = -180 + col * 72
-        local sy = -44 - row * 66
-        local border = ui.box(right, sx, sy, 60, 54, ui.C_BG, "panel_rounded")
-        local fill = ui.box(border, 0, 0, 50, 44, ui.C_WHITE, "panel_rounded")
+        local col, row = (i - 1) % 6, math.floor((i - 1) / 6)
+        local border = ui.box(g.pane_style, -250 + col * 100, -15 - row * 66, 88, 58, ui.C_BG, "panel_rounded")
+        local fill = ui.box(border, 0, 0, 76, 46, ui.C_WHITE, "panel_rounded")
+        local id = i
         self.druid:new_button(border, function()
             local s = progress.get()
             audio.play("ui_click", 0.5)
-            if s.unlocked_trails[i] then
+            if s.unlocked_trails[id] then
                 self.preview_cosmetic = nil
-                s.equipped_trail = i
+                s.equipped_trail = id
                 progress.save()
             else
-                self.preview_cosmetic = { kind = "trail", id = i }
+                self.preview_cosmetic = { kind = "trail", id = id }
             end
-            refresh_hangar(self)
+            refresh(self)
         end)
-        self.trail_swatches[i] = { border = border, fill = fill }
+        g.trails[i] = { border = border, fill = fill }
     end
-
-    self.btn_craft_rand, self.node_craft_rand, self.lbl_craft_rand = ui.button(
-        self.druid, right, -112, -202, 214, 64, "CRAFT RANDOM", ui.C_AQUA, "panel_rounded",
-        function()
-            local kind = progress.craft_random_cosmetic()
-            if kind then
-                self.preview_cosmetic = nil
-                audio.play("heal", 0.6)
-                refresh_hangar(self)
-            end
-        end, 0.34
-    )
-
-    self.btn_craft_sel, self.node_craft_sel, self.lbl_craft_sel = ui.button(
-        self.druid, right, 112, -202, 214, 64, "CRAFT", ui.C_ELEV, "panel_rounded",
-        function()
-            local pk = self.preview_cosmetic
-            if pk and progress.craft_cosmetic(pk.kind, pk.id) then
-                self.preview_cosmetic = nil
-                audio.play("heal", 0.6)
-                refresh_hangar(self)
-            end
-        end, 0.34
-    )
-
-    self.btn_rand_skin, _, self.lbl_rand_skin = ui.button(self.druid, right, 0, -290, 440, 66, "RANDOM SKIN (AD)", ui.C_CORAL, "panel_rounded", function()
+    _, g.btn_craft_rand, g.lbl_craft_rand = ui.button(self.druid, g.pane_style, -160, -205, 300, 72, "", ui.C_AQUA, "panel_rounded", function()
+        if progress.craft_random_cosmetic() then
+            self.preview_cosmetic = nil
+            audio.play("heal", 0.6)
+        else
+            audio.play("error", 0.4)
+        end
+        refresh(self)
+    end, 0.34)
+    _, g.btn_craft_sel, g.lbl_craft_sel = ui.button(self.druid, g.pane_style, 160, -205, 300, 72, "", ui.C_ELEV, "panel_rounded", function()
+        local pk = self.preview_cosmetic
+        if pk and progress.craft_cosmetic(pk.kind, pk.id) then
+            self.preview_cosmetic = nil
+            audio.play("heal", 0.6)
+        else
+            audio.play("error", 0.4)
+        end
+        refresh(self)
+    end, 0.34)
+    _, _, g.lbl_rand_ad = ui.button(self.druid, g.pane_style, 0, -300, 620, 70, "", ui.C_CORAL, "panel_rounded", function()
         poki.rewarded_break(function(ok)
             if ok then
                 self.preview_cosmetic = nil
                 progress.unlock_random_cosmetic()
                 audio.play("heal", 0.6)
-                refresh_hangar(self)
+                refresh(self)
             end
         end)
-    end, 0.44)
-
-    -- Bottom Center/Right: Test Drive & Battle CTA
-    self.btn_test_drive, self.node_test_drive, self.lbl_test_drive = ui.button(
-        self.druid, self.root, 960, 112, 420, 72, "TEST DRIVE +1 TIER", ui.C_AMBER, "panel_rounded",
-        function()
-            local s = progress.get()
-            if not s.test_drive_active then
-                poki.rewarded_break(function(ok)
-                    if ok then
-                        s.test_drive_active = true
-                        refresh_hangar(self)
-                    end
-                end)
-            end
-        end, 0.46
-    )
-
-    self.btn_battle, _, self.lbl_battle = ui.button(
-        self.druid, self.root, 1630, 100, 500, 108, "BATTLE", ui.C_GREEN, "panel_rounded",
-        function()
-            msg.post("/controller#main", "start_battle")
-        end, 0.62
-    )
+    end, 0.4)
+    _, _, g.lbl_back = ui.button(self.druid, g.root, 180, 75, 280, 80, "", ui.C_ELEV, "panel_rounded", function() go_screen(self, "hub") end, 0.5)
+    self.hg = g
 end
 
+local function build_settings(self)
+    local t = {}
+    t.root = ui.box(self.root, 960, 540, 1920, 1080, vmath.vector4(0.02, 0.04, 0.08, 0.75))
+    t.blocker = self.druid:new_blocker(t.root)
+    local p = ui.box(t.root, -280, 0, 560, 660, ui.C_BG, "panel_rounded")
+    t.title = ui.text(p, 0, 280, "", 0.72, ui.C_AQUA)
+    local function opt(y, fn)
+        local _, _, l = ui.button(self.druid, p, 0, y, 460, 64, "", ui.C_ELEV, "panel_rounded", function()
+            fn()
+            progress.save()
+            refresh(self)
+        end, 0.4)
+        return l
+    end
+    t.lbl_sound = opt(190, function()
+        local s = progress.settings()
+        s.muted = not s.muted
+        audio.set_muted(s.muted)
+    end)
+    t.lbl_af = opt(115, function()
+        local s = progress.settings()
+        s.autofire = not s.autofire
+    end)
+    t.lbl_sens = opt(40, function()
+        local s = progress.settings()
+        local steps = { 0.6, 0.8, 1.0, 1.25, 1.5 }
+        local idx = 3
+        for i, v in ipairs(steps) do if math.abs(v - (s.sensitivity or 1)) < 0.01 then idx = i end end
+        s.sensitivity = steps[(idx % #steps) + 1]
+    end)
+    t.lbl_inv = opt(-35, function()
+        local s = progress.settings()
+        s.invert_y = not s.invert_y
+    end)
+    t.lbl_lang = opt(-110, function()
+        progress.settings().language = i18n.cycle_language()
+    end)
+    _, _, t.lbl_close = ui.button(self.druid, p, 0, -250, 460, 76, "", ui.C_GREEN, "panel_rounded", function()
+        self.settings_open = false
+        refresh(self)
+    end, 0.5)
+    local cpanel = ui.box(t.root, 330, 0, 600, 660, ui.C_BG, "panel_rounded")
+    t.ctl_title = ui.text(cpanel, 0, 280, "", 0.56, ui.C_GOLD)
+    t.ctl = ui.para(cpanel, -265, 235, "", 0.32, ui.C_WHITE, 530)
+    self.set = t
+end
+
+local function build(self)
+    if self.root then gui.delete_node(self.root) end
+    if self.druid then self.druid:final() end
+    self.druid = druid.new(self)
+    self.root = ui.box(nil, 0, 0, 0, 0, vmath.vector4(0, 0, 0, 0))
+    build_topbar(self)
+    build_hub(self)
+    build_campaign(self)
+    build_skirmish(self)
+    build_hangar(self)
+    build_settings(self)
+    gui.set_enabled(self.root, self.visible)
+end
+
+-- =================================================================== LIFECYCLE
 function init(self)
     msg.post(".", "acquire_input_focus")
     self.visible = false
-    self.preview_cosmetic = nil
-    build_hangar(self)
+    self.screen = "hub"
+    self.hg_tab = 1
+    self.sel_sector = 1
+    self.sel_mission = "s1m1"
+    self.settings_open = false
+    self.toast_timer = 0
+    build(self)
 end
 
 function final(self)
@@ -367,10 +830,23 @@ end
 
 function update(self, dt)
     if self.druid then self.druid:update(dt) end
+    if self.toast_timer > 0 then
+        self.toast_timer = self.toast_timer - dt
+        if self.toast_timer <= 0 then gui.set_enabled(self.toast_bg, false) end
+    end
 end
 
 function on_input(self, action_id, action)
     if not self.visible then return false end
+    if action_id == hash("pause") and action.pressed then
+        if self.settings_open then
+            self.settings_open = false
+            refresh(self)
+        elseif self.screen ~= "hub" then
+            go_screen(self, "hub")
+        end
+        return true
+    end
     if self.druid then return self.druid:on_input(action_id, action) end
     return false
 end
@@ -380,8 +856,10 @@ function on_message(self, message_id, message)
         self.visible = message.visible and true or false
         gui.set_enabled(self.root, self.visible)
         if self.visible then
-            self.preview_cosmetic = nil
-            refresh_hangar(self)
+            self.settings_open = false
+            go_screen(self, "hub")
+            local n = progress.claimable_contracts()
+            if n > 0 then toast(self, fmt("contracts_ready", n), ui.C_GREEN) end
         end
     end
 end

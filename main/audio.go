@@ -68,3 +68,53 @@ embedded_components {
   type: "sound"
   data: "sound: \"/assets/sfx/defeat.wav\"\n"
 }
+embedded_components {
+  id: "ring"
+  type: "sound"
+  data: "sound: \"/assets/sfx/ring.wav\"\n"
+}
+embedded_components {
+  id: "levelup"
+  type: "sound"
+  data: "sound: \"/assets/sfx/levelup.wav\"\n"
+}
+embedded_components {
+  id: "alarm"
+  type: "sound"
+  data: "sound: \"/assets/sfx/alarm.wav\"\n"
+}
+embedded_components {
+  id: "wave"
+  type: "sound"
+  data: "sound: \"/assets/sfx/wave.wav\"\n"
+}
+embedded_components {
+  id: "boost"
+  type: "sound"
+  data: "sound: \"/assets/sfx/boost.wav\"\n"
+}
+embedded_components {
+  id: "objective"
+  type: "sound"
+  data: "sound: \"/assets/sfx/objective.wav\"\n"
+}
+embedded_components {
+  id: "error"
+  type: "sound"
+  data: "sound: \"/assets/sfx/error.wav\"\n"
+}
+embedded_components {
+  id: "coin"
+  type: "sound"
+  data: "sound: \"/assets/sfx/coin.wav\"\n"
+}
+embedded_components {
+  id: "hit"
+  type: "sound"
+  data: "sound: \"/assets/sfx/hit.wav\"\n"
+}
+embedded_components {
+  id: "kill"
+  type: "sound"
+  data: "sound: \"/assets/sfx/kill.wav\"\n"
+}

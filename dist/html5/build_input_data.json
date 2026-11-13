@@ -1,15 +1,15 @@
 {
   "project_git" : {
-    "sha1" : "feb904fe1b0fb320e0aaee0c7490379f80dbd913",
+    "sha1" : "c6a1805db6892e13f410faaa5c1591469006545d",
     "origin" : "https://github.com/a-gellert/Void.git",
     "branch" : "main"
   },
   "bob_arguments" : {
-    "sha1" : "a81dbb0478e8b73931dc2d671563204f6ac0ef82",
+    "sha1" : "d295ed4edff2e49072719835713e625f409849f1",
     "version" : "1.14.0",
-    "timestamp" : "2026-10-12 11:39:45"
+    "timestamp" : "2026-10-19 14:44:44"
   },
-  "defold_sdk" : "a81dbb0478e8b73931dc2d671563204f6ac0ef82",
+  "defold_sdk" : "d295ed4edff2e49072719835713e625f409849f1",
   "dependencies" : [ {
     "url" : "https://github.com/defold/extension-poki-sdk/archive/refs/heads/main.zip",
     "commit-sha1" : "3e0c3296e6c4a27b99387d9c54d06626daa94b89",
