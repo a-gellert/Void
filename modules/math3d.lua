@@ -79,6 +79,20 @@ function M.rotate_towards(current, target, fraction)
     ), c)
 end
 
+-- Rodrigues rotation of vector v around the unit axis (ax, ay, az) by `angle` radians.
+function M.rotate_about(v, ax, ay, az, angle)
+    local c, s = math.cos(angle), math.sin(angle)
+    local dot = v.x * ax + v.y * ay + v.z * az
+    local cx = ay * v.z - az * v.y
+    local cy = az * v.x - ax * v.z
+    local cz = ax * v.y - ay * v.x
+    return vmath.vector3(
+        v.x * c + cx * s + ax * dot * (1 - c),
+        v.y * c + cy * s + ay * dot * (1 - c),
+        v.z * c + cz * s + az * dot * (1 - c)
+    )
+end
+
 -- Clamp a direction's vertical component to +/- max_y while preserving its
 -- horizontal heading and unit length. A plain clamp followed by normalize does
 -- not work: for an almost vertical vector normalization scales the clamped Y

@@ -1,7 +1,13 @@
 -- Unified pilot input. The HUD gui_script writes it (mouse, keyboard, touch,
 -- gamepad); main.script feeds it to match_controller and clears the one-shot
 -- flags after every simulation step.
+-- Steering:
+--  * mouse: aim_dx / aim_dy accumulate the aim rotation (radians) since the last frame
+--    (mouse-aim: the aim point lives in the world, the ship follows it);
+--  * touch stick / gamepad: steer_x / steer_y (-1..1) rotate the aim at a rate.
 local M = {
+    aim_dx = 0,
+    aim_dy = 0,
     -- Continuous axes (-1..1)
     steer_x = 0,
     steer_y = 0,
@@ -21,6 +27,8 @@ local M = {
 }
 
 function M.clear_edges()
+    M.aim_dx = 0
+    M.aim_dy = 0
     M.dash = false
     M.missile = false
     M.mod1 = false

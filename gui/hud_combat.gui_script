@@ -25,6 +25,15 @@ local H = {
     CONFIRM = hash("confirm"), BACK = hash("key_back"),
 }
 
+local MOUSE_RAD_PER_PX = 0.0030 -- aim rotation per mouse pixel (x sensitivity setting)
+local MOUSE_MAX_STEP = 90        -- clamp single-event jumps (cursor re-entering the window)
+local EDGE_RATE = 1.7            -- rad/s aim rotation while an uncaptured cursor rests at the screen edge
+local EDGE_ZONE = 0.04
+
+local function mouse_locked()
+    return window.get_mouse_lock and window.get_mouse_lock() or false
+end
+
 local N_MARKERS = 12
 local N_ARROWS = 8
 local N_BLIPS = 26
@@ -128,7 +137,8 @@ local function build(self)
 
     -- Centre: reticle, steering ring + cursor, lock, lead pip, hit marker
     self.reticle = ui.box(self.root, 960, 540, 200, 200, vmath.vector4(0.15, 0.78, 0.85, 0.55), "reticle")
-    self.steer_cursor = ui.box(self.root, 960, 540, 18, 18, vmath.vector4(0.15, 0.78, 0.85, 0.8), "dot")
+    -- Nose marker: where the ship currently points (it chases the reticle)
+    self.steer_cursor = ui.box(self.root, 960, 540, 34, 34, vmath.vector4(0.85, 0.95, 1.0, 0.75), "lock_ring")
     self.hit_marker = ui.box(self.root, 960, 540, 56, 56, ui.C_WHITE, "hit_marker")
     gui.set_enabled(self.hit_marker, false)
     self.lock_ring = ui.box(self.root, 960, 540, 86, 86, ui.C_CORAL, "lock_ring")
@@ -706,7 +716,9 @@ local function update_hud(self, m, dt)
     local spd = math.floor((p.cur_speed or 0) + 0.5)
     gui.set_text(self.txt_speed, string.format("%d %s", spd, i18n.t("mps")))
     gui.set_color(self.txt_speed, p.boosting and ui.C_GOLD or (p.braking and ui.C_AQUA or ui.C_WHITE))
-    gui.set_text(self.txt_status_hint, set.autofire and i18n.t("autofire_on") or "")
+    local capture_hint = self.want_lock and not mouse_locked() and html5 ~= nil
+    gui.set_text(self.txt_status_hint, capture_hint and i18n.t("mouse_capture_hint") or (set.autofire and i18n.t("autofire_on") or ""))
+    gui.set_color(self.txt_status_hint, capture_hint and ui.C_GOLD or ui.C_DIM)
 
     -- Vignette: damage flash + low hull pulse
     local va = 0
@@ -729,9 +741,15 @@ local function update_hud(self, m, dt)
     update_actions(self, p, m)
 
     -- Steering cursor (mouse) / ring
-    local show_cursor = p.alive and input_state.device == "mouse"
-    gui.set_enabled(self.steer_cursor, show_cursor)
-    if show_cursor then set_pos(self.steer_cursor, 960 + input_state.steer_x * 260, 540 + input_state.steer_y * 200) end
+    local show_nose = false
+    if p.alive then
+        local np = p.pos + p.forward * 60
+        local nx, ny, nf = camera_rig.world_to_screen(np.x, np.y, np.z)
+        local dx, dy = nx - 960, ny - 540
+        show_nose = nf and (dx * dx + dy * dy) > 64
+        if show_nose then set_pos(self.steer_cursor, nx, ny) end
+    end
+    gui.set_enabled(self.steer_cursor, show_nose)
 
     -- Lock ring + lead pip
     local lt = p.locked_target
@@ -932,6 +950,47 @@ function init(self)
     self.refresh_result = refresh_result
     build(self)
     for _, b in ipairs(self.action_list) do b.keytext = gui.get_text(b.key) end
+    self.want_lock = false
+    self.had_lock = false
+    -- Browsers only grant pointer lock inside a user gesture: request it from the
+    -- interaction listener (runs inside the JS click / key handler).
+    if html5 and html5.set_interaction_listener then
+        html5.set_interaction_listener(function()
+            if self.want_lock and window.set_mouse_lock and not mouse_locked() then
+                window.set_mouse_lock(true)
+            end
+        end)
+    end
+end
+
+-- Capture the cursor during active mouse play; pause if the browser drops the capture (Esc).
+local function update_mouse_lock(self, m, dt)
+    self.want_lock = self.visible and m.active and not m.paused and not m.finished and input_state.device == "mouse"
+    if not window.set_mouse_lock then return end
+    local locked = mouse_locked()
+    if not self.want_lock then
+        if locked then window.set_mouse_lock(false) end
+        self.had_lock = false
+        return
+    end
+    if not html5 and not locked then window.set_mouse_lock(true) end
+    if self.had_lock and not locked then
+        self.had_lock = false
+        self.set_pause(self, true)
+        return
+    end
+    self.had_lock = locked
+    -- Uncaptured fallback: keep turning while the cursor rests at a screen edge.
+    if not locked and self.last_mx then
+        local w, h = window.get_size()
+        if w > 0 and h > 0 then
+            local nx, ny = self.last_mx / w, self.last_my / h
+            if nx < EDGE_ZONE then input_state.aim_dx = input_state.aim_dx - EDGE_RATE * dt end
+            if nx > 1 - EDGE_ZONE then input_state.aim_dx = input_state.aim_dx + EDGE_RATE * dt end
+            if ny < EDGE_ZONE then input_state.aim_dy = input_state.aim_dy - EDGE_RATE * dt end
+            if ny > 1 - EDGE_ZONE then input_state.aim_dy = input_state.aim_dy + EDGE_RATE * dt end
+        end
+    end
 end
 
 function final(self)
@@ -974,6 +1033,7 @@ function update(self, dt)
         end
         self.refresh_result(self)
     end
+    update_mouse_lock(self, m, dt)
     if not m.active and not m.finished then return end
     if m.paused then return end
     if not m.finished then
@@ -1137,25 +1197,27 @@ function on_input(self, action_id, action)
         return true
     end
 
-    -- Mouse move: virtual stick from the cursor offset to screen centre
+    -- Mouse move: mouse-aim. Deltas rotate the world-space aim (captured cursor uses raw
+    -- movement, an uncaptured one uses position differences + edge push in update()).
     if action_id == nil and action.screen_x and input_state.device ~= "touch" then
-        local win_w, win_h = window.get_size()
-        if win_w > 0 and win_h > 0 then
-            if math.abs(action.dx or 0) + math.abs(action.dy or 0) > 0 then input_state.device = "mouse" end
-            if input_state.device == "mouse" then
-                local nx = ((action.screen_x / win_w) - 0.5) * 2.0 * 1.2
-                local ny = ((action.screen_y / win_h) - 0.5) * 2.0 * 1.2
-                local mag = math.sqrt(nx * nx + ny * ny)
-                local dz = 0.05
-                if mag <= dz then
-                    nx, ny = 0, 0
-                else
-                    local sc = math.min(1.0, (mag - dz) / (1.0 - dz)) / mag
-                    nx, ny = nx * sc, ny * sc
-                end
-                input_state.steer_x, input_state.steer_y = nx, ny
-                if mag > 0.1 then poki.gameplay_start() end
+        local dx, dy
+        if mouse_locked() then
+            dx, dy = action.screen_dx or 0, action.screen_dy or 0
+        else
+            local lx, ly = self.last_mx, self.last_my
+            dx, dy = lx and (action.screen_x - lx) or 0, ly and (action.screen_y - ly) or 0
+        end
+        self.last_mx, self.last_my = action.screen_x, action.screen_y
+        if dx ~= 0 or dy ~= 0 then
+            if input_state.device ~= "mouse" then
+                input_state.device = "mouse"
+                input_state.steer_x, input_state.steer_y = 0, 0
             end
+            dx = math.max(-MOUSE_MAX_STEP, math.min(MOUSE_MAX_STEP, dx))
+            dy = math.max(-MOUSE_MAX_STEP, math.min(MOUSE_MAX_STEP, dy))
+            input_state.aim_dx = input_state.aim_dx + dx * MOUSE_RAD_PER_PX
+            input_state.aim_dy = input_state.aim_dy + dy * MOUSE_RAD_PER_PX
+            poki.gameplay_start()
         end
     end
     return false

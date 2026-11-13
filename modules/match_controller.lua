@@ -316,6 +316,7 @@ function api.spawn_player()
         pos = match.cfg.player_pos, forward = match.cfg.player_fwd,
     })
     match.player = p
+    if p then p.aim_dir = vmath.vector3(p.forward.x, p.forward.y, p.forward.z) end
     return p
 end
 
@@ -719,7 +720,11 @@ local function respawn(s)
     s.ai_target = nil
     pool_manager.configure_ship_visual(s.pool_slot, s.mesh, s.tier, s.skin_id, s.trail_id, true)
     go.set_position(s.pos, s.pool_slot.id)
-    if s.is_player then camera_rig.reset(s.pos, s.forward) end
+    s.ang_vel = 0
+    if s.is_player then
+        s.aim_dir = vmath.vector3(s.forward.x, s.forward.y, s.forward.z)
+        camera_rig.reset(s.pos, s.forward)
+    end
 end
 
 local function update_pickups(dt)
@@ -789,16 +794,63 @@ local function update_structures(dt)
     end
 end
 
+local STICK_AIM_RATE = 2.3     -- rad/s of aim rotation at full stick deflection
+local AIM_LEASH = math.rad(70) -- the aim may lead the nose by at most this angle
+local AIM_MAX_Y = 0.85         -- aim pitch limit (sin of ~58 degrees)
+local ASSIST_CONE = math.cos(math.rad(7))
+
+-- Mouse-aim: the aim direction lives in world space. Mouse deltas rotate it directly,
+-- stick / gamepad rotate it at a rate; the ship then turns towards it on its own.
+local function update_aim(p, inp, set, locked, dt)
+    local aim = p.aim_dir or p.forward
+    local sens = set.sensitivity or 1.0
+    local inv = set.invert_y and -1 or 1
+    local sx, sy = inp.steer_x, inp.steer_y
+    local yaw = -inp.aim_dx * sens - sx * (0.35 + 0.65 * math.abs(sx)) * STICK_AIM_RATE * sens * dt
+    local pitch = (inp.aim_dy * sens + sy * (0.35 + 0.65 * math.abs(sy)) * STICK_AIM_RATE * sens * dt) * inv
+    local active = math.abs(yaw) + math.abs(pitch) > 1e-5
+    if active then
+        aim = math3d.rotate_about(aim, 0, 1, 0, yaw)
+        local r = vmath.cross(aim, vmath.vector3(0, 1, 0))
+        local rl = vmath.length(r)
+        if rl > 1e-4 then
+            r = r * (1 / rl)
+            aim = math3d.rotate_about(aim, r.x, r.y, r.z, pitch)
+        end
+    end
+    aim = math3d.clamp_pitch(math3d.normalize_or_default(aim, p.forward), AIM_MAX_Y, p.forward)
+    -- Leash to the nose so the camera never swings away from the ship.
+    local ang = math.acos(math3d.clamp(vmath.dot(aim, p.forward), -1, 1))
+    if ang > AIM_LEASH then
+        aim = math3d.rotate_towards(aim, p.forward, (ang - AIM_LEASH) / ang)
+    end
+    -- Arena shell push-back: let the aim follow the nose back inside.
+    if p.near_boundary then
+        aim = math3d.rotate_towards(aim, p.forward, math.min(1, dt * 4.0))
+    end
+    -- Gentle aim assist while the player is not actively steering.
+    if locked and locked.alive and not active then
+        local lead = math3d.compute_lead_point(p.pos, locked.pos, locked.vel or vmath.vector3(), p.proj_speed)
+        local to = math3d.normalize_or_default(lead - p.pos, aim)
+        if vmath.dot(aim, to) > ASSIST_CONE then
+            aim = math3d.rotate_towards(aim, to, math.min(1, dt * 1.6))
+        end
+    end
+    p.aim_dir = aim
+    return aim
+end
+
 local function control_player(p, dt)
     local inp = input_state
     local set = progress.settings()
     if p.alive then
-        flight_physics.update_player(p, inp, set, dt)
+        local aim = update_aim(p, inp, set, p.locked_target, dt)
+        flight_physics.update_player_aim(p, aim, inp, dt)
         if p.boost_started then
             p.boost_started = false
             audio.play("boost", 0.4)
         end
-        camera_rig.update_battle(p, inp.steer_x, inp.steer_y, dt)
+        camera_rig.update_battle(p, aim, dt)
 
         local lock_r = (inp.device == "touch") and 215 or 175
         local locked = combat_manager.acquire_player_lock(p, match.ships, match.structures, lock_r)
@@ -834,10 +886,10 @@ local function apply_bumps(s)
     local imp = s.bump_impact or 0
     if imp > 0 then
         s.bump_impact = 0
-        if imp > 16 and s.bump_cd <= 0 and s.alive and not s.is_vip then
+        if imp > 22 and s.bump_cd <= 0 and s.alive and not s.is_vip then
             s.bump_cd = 0.6
             s.cur_speed = (s.cur_speed or s.speed) * 0.55
-            local dmg = s.max_hull * 0.035 * math.min(2.5, imp / 25)
+            local dmg = s.max_hull * 0.025 * math.min(2.0, imp / 30)
             s.hull = s.hull - dmg
             s.hit_flash = 1.0
             if s.is_player then

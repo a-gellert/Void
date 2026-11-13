@@ -63,25 +63,27 @@ local function apply_shake(base, dt)
     return final_pos
 end
 
--- Chase cam behind the player. Leans into turns so the reticle leads the motion.
-function M.update_battle(ship, steer_x, steer_y, dt)
+-- Mouse-aim chase cam: sits behind the ship along the AIM direction (not the nose),
+-- so the screen centre is always where the player wants to fly and the ship
+-- visibly swings towards it.
+function M.update_battle(ship, aim_dir, dt)
     if not ship then return end
+    local aim = aim_dir or ship.forward
     local spd_ratio = (ship.cur_speed or ship.speed) / math.max(1, ship.speed)
     local target_fov = 64.0 + math3d.clamp((spd_ratio - 1.0) * 14.0, -4.0, 16.0)
     if (ship.warp_flash or 0) > 0 then target_fov = 82.0 end
     current_fov = math3d.lerp(current_fov, target_fov, math.min(1.0, dt * 6.0))
 
-    local horiz_fwd = math3d.normalize_or_default(vmath.vector3(ship.forward.x, ship.forward.y * 0.55, ship.forward.z))
-    local right = math3d.normalize_or_default(vmath.cross(horiz_fwd, UP), vmath.vector3(1, 0, 0))
-    local back = 16.5 + math3d.clamp((spd_ratio - 1.0) * 3.0, -1.5, 3.5)
-    local desired_pos = ship.pos - horiz_fwd * back + UP * 4.4 - right * (steer_x * 2.0)
-    local desired_look = ship.pos + ship.forward * 42.0 + right * (steer_x * 5.0) + UP * (steer_y * 3.5)
+    local aim_h = math3d.normalize_or_default(vmath.vector3(aim.x, aim.y * 0.6, aim.z), ship.forward)
+    local back = 17.0 + math3d.clamp((spd_ratio - 1.0) * 3.0, -1.5, 3.5)
+    local desired_pos = ship.pos - aim_h * back + UP * 4.6
+    local desired_look = ship.pos + aim * 60.0 + UP * 2.0
 
-    local follow_t = math.min(1.0, dt * 10.5)
+    local follow_t = math.min(1.0, dt * 12.0)
     cam_pos.x = math3d.lerp(cam_pos.x, desired_pos.x, follow_t)
     cam_pos.y = math3d.lerp(cam_pos.y, desired_pos.y, follow_t)
     cam_pos.z = math3d.lerp(cam_pos.z, desired_pos.z, follow_t)
-    local look_t = math.min(1.0, follow_t * 1.25)
+    local look_t = math.min(1.0, dt * 22.0)
     cam_look.x = math3d.lerp(cam_look.x, desired_look.x, look_t)
     cam_look.y = math3d.lerp(cam_look.y, desired_look.y, look_t)
     cam_look.z = math3d.lerp(cam_look.z, desired_look.z, look_t)

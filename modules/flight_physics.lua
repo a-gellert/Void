@@ -1,6 +1,6 @@
 -- 3D arcade flight model (pure Lua, no physics engine).
---  * Player: rate control. Steer input sets yaw/pitch angular velocity, smoothed by
---    hull agility. Auto-horizon keeps the ship upright (no manual roll).
+--  * Player: mouse-aim. The ship turns towards a world-space aim direction (see
+--    match_controller.update_aim). Auto-horizon keeps the ship upright (no manual roll).
 --  * AI: steers towards a desired direction along the shortest arc.
 --  * Shared: throttle (cruise / afterburner on energy / brake), lateral strafe,
 --    evasive dash with barrel roll, obstacle push-out + bump events, soft arena shell.
@@ -81,20 +81,6 @@ local function resolve_repulsion(ship, dx, dy, dz, d_sq, min_r)
         ), ship.forward)
     end
     return math.max(0, impact)
-end
-
-local function rotate_about(v, ax, ay, az, angle)
-    -- Rodrigues rotation of v around unit axis (ax, ay, az).
-    local c, s = math.cos(angle), math.sin(angle)
-    local dot = v.x * ax + v.y * ay + v.z * az
-    local cx = ay * v.z - az * v.y
-    local cy = az * v.x - ax * v.z
-    local cz = ax * v.y - ay * v.x
-    return vmath.vector3(
-        v.x * c + cx * s + ax * dot * (1 - c),
-        v.y * c + cy * s + ay * dot * (1 - c),
-        v.z * c + cz * s + az * dot * (1 - c)
-    )
 end
 
 -- Throttle + energy. ctl = { boost = bool, brake = bool }
@@ -237,38 +223,26 @@ local function integrate(ship, strafe_in, bank, dt)
     ship.rot = math3d.quat_from_forward(ship.forward, roll)
 end
 
-local function shape(v)
-    -- Expo curve: precise near centre, fast at the edge.
-    return v * (0.35 + 0.65 * math.abs(v))
-end
-
---- Player flight. inp = input_state, opts = { sensitivity, invert_y }
-function M.update_player(ship, inp, opts, dt)
+--- Player mouse-aim flight: the ship turns towards the world-space aim direction.
+--- Angular speed is proportional to the remaining angle (no overshoot), capped by the
+--- hull turn rate and smoothed by agility, so the nose settles exactly on the aim.
+function M.update_player_aim(ship, aim_dir, inp, dt)
     if not ship.alive then return end
     update_throttle(ship, inp, dt)
-    local sens = (opts and opts.sensitivity) or 1.0
-    local inv = (opts and opts.invert_y) and -1 or 1
-    local max_rate = ship.turn_rate * 0.62 * turn_mult(ship) * sens
-    local target_yaw = -shape(inp.steer_x) * max_rate
-    local target_pitch = shape(inp.steer_y) * max_rate * inv
-    local k = math.min(1.0, (ship.agility or 7) * dt)
-    ship.yaw_vel = math3d.lerp(ship.yaw_vel or 0, target_yaw, k)
-    ship.pitch_vel = math3d.lerp(ship.pitch_vel or 0, target_pitch, k)
-
-    local f = rotate_about(ship.forward, 0, 1, 0, ship.yaw_vel * dt)
-    local r = vmath.cross(f, UP)
-    local rl = vmath.length(r)
-    if rl > 1e-4 then
-        r = r * (1.0 / rl)
-        f = rotate_about(f, r.x, r.y, r.z, ship.pitch_vel * dt)
+    local f = ship.forward
+    local d = math3d.clamp(f.x * aim_dir.x + f.y * aim_dir.y + f.z * aim_dir.z, -1, 1)
+    local angle = math.acos(d)
+    local max_rate = ship.turn_rate * 0.8 * turn_mult(ship)
+    local target_w = math.min(max_rate, angle * 5.0)
+    ship.ang_vel = math3d.lerp(ship.ang_vel or 0, target_w, math.min(1.0, (ship.agility or 7) * 1.4 * dt))
+    if angle > 1e-4 then
+        local frac = math.min(1.0, ship.ang_vel * dt / angle)
+        ship.forward = math3d.rotate_towards(f, aim_dir, frac)
     end
-    ship.forward = math3d.clamp_pitch(math3d.normalize_or_default(f, ship.forward), MAX_PITCH_Y, ship.forward)
-    -- Stop pitching into the clamp so input releases instantly at the limit.
-    if (ship.forward.y >= MAX_PITCH_Y - 0.001 and ship.pitch_vel > 0) or (ship.forward.y <= -MAX_PITCH_Y + 0.001 and ship.pitch_vel < 0) then
-        ship.pitch_vel = 0
-    end
-    local bank = 0
-    if max_rate > 0 then bank = math3d.clamp(ship.yaw_vel / max_rate, -1, 1) * 0.8 end
+    ship.forward = math3d.clamp_pitch(ship.forward, MAX_PITCH_Y, ship.forward)
+    local rx, rz = -ship.forward.z, ship.forward.x
+    local lateral = rx * aim_dir.x + rz * aim_dir.z
+    local bank = math3d.clamp(-lateral * 1.6, -0.9, 0.9)
     integrate(ship, inp.strafe, bank, dt)
 end
 

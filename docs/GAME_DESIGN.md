@@ -19,7 +19,7 @@ outskirts; behind them stands the Void Armada with its dreadnoughts. Four sector
 
 | Action | Mouse + keyboard | Touch | Gamepad |
 |---|---|---|---|
-| Steer | Cursor offset from screen centre (virtual stick, rate control) | Floating stick, left half | Left stick |
+| Steer | Mouse-aim: move the mouse, the ship turns to the reticle (click captures the cursor) | Floating stick, left half | Left stick |
 | Fire | Hold LMB (auto-fire on lock, toggle in settings) | Hold FIRE (auto-fire on lock) | RT |
 | Guided missile | RMB / F / R (needs a lock) | MSL | Y / RB |
 | Boost (energy) | Hold Shift or W | Hold BOOST | LT |
@@ -30,14 +30,22 @@ outskirts; behind them stands the Void Armada with its dreadnoughts. Four sector
 | Scoreboard / pause | Tab / Esc, P | — / II | Back / Start |
 
 Flight model:
-- **Rate control:** stick deflection sets yaw/pitch angular velocity (expo curve: precise near centre,
-  fast at the edge), smoothed by hull agility. Auto-horizon, no manual roll.
+- **Mouse-aim:** the reticle marks a world-space aim direction. Mouse movement rotates it
+  (0.003 rad/px × sensitivity); the ship turns towards it on its own (angular speed ∝ remaining angle,
+  capped at 0.8 × hull turn rate, smoothed by agility), so releasing the mouse means "fly straight there".
+  The camera sits behind the ship along the aim. A small ring shows where the nose points right now.
+  Aim is leashed to 70° from the nose and pitch-limited to ~58°; near the arena shell it follows the nose back.
+  The cursor is captured (pointer lock) on the first click; losing the capture (Esc) pauses the game.
+  Without capture, the cursor at a screen edge keeps turning (1.7 rad/s).
+- **Stick / gamepad:** deflection rotates the aim at up to 2.3 rad/s (expo curve).
+- **Aim assist:** while the player is not steering and a locked target sits within 7° of the aim, the aim
+  drifts towards its lead point (1.6 /s). Auto-horizon, no manual roll.
 - **Throttle:** cruise speed by default; boost ×1.65–1.8 drains energy (30/s, regen 22/s after 0.8 s);
   brake ×0.5 speed but ×1.35 turn rate; boosting turns ×0.8.
 - **Evade:** 0.5 s burst (×2.3 speed) with a barrel roll, 5 s cooldown, drops every missile lock.
 - **Aim:** whatever sits inside the reticle circle is soft-locked; shots lead the locked target.
   Without a lock, shots converge on the point under the reticle.
-- **Asteroid bumps:** hitting an obstacle hard (> 16 m/s into the surface) costs ~3–9 % hull and speed.
+- **Asteroid bumps:** hitting an obstacle hard (> 22 m/s into the surface) costs ~2.5–5 % hull and speed.
 
 Settings: sound, auto-fire, steering sensitivity (0.6–1.5×), invert Y, language (EN / RU / PT / TR).
 
@@ -153,6 +161,9 @@ Endless Survival (Lv 3), Dreadnought (Lv 5, Mk grows every 8 levels). Layouts ro
 
 ## 9. Changelog (design)
 
+- **2026-11-13 — controls v2:** mouse-aim instead of cursor-offset rate steering (the old scheme kept the
+  ship spinning while the cursor was off-centre); camera follows the aim; nose marker; pointer lock with
+  auto-pause; edge push without capture; aim assist; softer asteroid bumps.
 - **2026-11-13 — full rework:** campaign (24 missions), 9 modes, 6 hulls, 9 modules, pilot levels, contracts,
   new flight model (rate control, throttle/energy, brake, strafe, evade roll), guided missiles, radar, damage
   numbers, scoreboard, results with stars, 4 languages.
